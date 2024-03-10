@@ -144,6 +144,110 @@ class HyperbolicSVMHard(SVM):
         # TODO: implement projection
 
 
+class HyperbolicSVMHardSDP(SVM):
+    def fit_binary(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose=False,
+        solution_type: str = "rank1",
+        *kargs,
+        **kwargs
+    ):
+        """
+        after solving the relaxed model, to get back w, we could
+        - "rank1": take rank1 decomposition of W
+        - "rank1-gd": take rank1 decomposition and run a couple of projected SGD
+        - "gaussian": draw random sample from N(z, W - zz^T) with the best in-sample classification performance
+        """
+        n, d = X.shape
+        Z_dim = d + 1  # implement Z = [W, z; z^T, 1]
+
+        # prepare linear constraints
+        G = np.eye(d)
+        G[0, 0] = -1.0
+
+        # only specify lower triangular part, divide by 2
+        A_flatten = (((X @ -G) * y.reshape(-1, 1)).flatten() / 2).tolist()
+
+        # formulate problem
+        with mosek.Task() as task:
+            if verbose:
+                task.set_Stream(mosek.streamtype.log, stream_printer)
+
+            # formulate constraints (margin constraint + w feasible + bottom right = 1)
+            bkc = [mosek.boundkey.lo] * (n + 1) + [mosek.boundkey.fx]
+            blc = [1.0] * n + [0.0, 1.0]
+            buc = [+_INF] * (n + 1) + [1.0]
+            task.appendcons(n + 2)
+            task.putconboundlist(range(n + 2), bkc, blc, buc)
+            task.appendbarvars([Z_dim])
+
+            # add constraints to the system
+            idxc = (
+                np.hstack([np.ones((d,), dtype=int) * k for k in range(n)]).tolist()
+                + [n] * d
+                + [n + 1]
+            )
+            sdp_var_idx = [0] * len(idxc)  # all on the same SDP variable
+            idx_k_list = [d] * (d * n) + list(range(d)) + [d]
+            idx_l_list = list(range(d)) * n + list(range(d)) + [d]
+            val_ijkl = A_flatten + [-1.0] + [1.0] * (d - 1) + [1.0]
+            task.putbarablocktriplet(
+                idxc, sdp_var_idx, idx_k_list, idx_l_list, val_ijkl
+            )
+
+            # add objective
+            task.putbarcblocktriplet(
+                [0] * d, range(d), range(d), [-1 / 2] + [1 / 2] * (d - 1)
+            )
+            task.putobjsense(mosek.objsense.minimize)
+
+            # run optimizer
+            task.optimize()
+
+            # check solution status
+            solsta = task.getsolsta(mosek.soltype.itr)
+            check_solution_status(solsta)
+
+            # get optimal solution (only the lower triangular flattened is returned)
+            bar_x = task.getbarxj(mosek.soltype.itr, 0)
+            Z_bar_lower = np.array(bar_x)
+            Z_bar = np.zeros((Z_dim, Z_dim))
+            Z_bar[np.triu_indices(Z_dim)] = Z_bar_lower
+            Z_bar += Z_bar.T
+            Z_bar -= np.diag(np.diag(Z_bar)) / 2
+
+            # record solution
+            self.W_ = Z_bar[:, :-1][:-1, :]
+            self.z_ = Z_bar[-1, :-1]
+
+            if verbose:
+                task.solutionsummary(mosek.streamtype.msg)
+                print("Optimal Solution: ")
+                print("W: \n", self.W_)
+                print("z: \n", self.z_)
+
+        # get w
+        if solution_type == "rank1":
+            # TODO: use LOBPCG to make this faster?
+            # eigen-decomposition
+            eigvals, eigvecs = np.linalg.eigh(self.W_)
+
+            # take top rank 1 direction
+            self.w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+        else:
+            # TODO: implement other heuristics
+            raise NotImplementedError()
+
+    def predict_binary(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
+        decision = (minkowski_product(X, self.w_) >= 0).astype(int)
+        return decision
+
+    def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
+        raise NotImplementedError()
+
+
 # * the following is not used, mosek refuses to solve nonconvex QP
 # class HyperbolicSVMHard(SVM):
 #     """original hyperbolic SVM formulation"""
