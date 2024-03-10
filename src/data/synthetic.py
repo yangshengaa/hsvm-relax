@@ -44,7 +44,7 @@ def hyperbolic_gaussian(
 
     X = np.vstack(Xs)
     X = expmap0_lorentz(X)  # lift
-    y = np.vstack(ys)
+    y = np.hstack(ys).astype(int)
 
     return X, y
 
