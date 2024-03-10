@@ -10,6 +10,11 @@ from scipy.sparse import coo_array
 import mosek
 
 
+# =============================================================
+# --------------------- mosek related -------------------------
+# =============================================================
+
+
 # for mosek printing
 def stream_printer(text):
     sys.stdout.write(text)
@@ -50,3 +55,25 @@ def parse_sparse_linear_constraints(
     """
     A_sparse = coo_array(A)
     return A_sparse.data, A_sparse.row, A_sparse.col
+
+
+# =================================================================
+# --------------- hyperbolic util functions -----------------------
+# =================================================================
+
+
+def minkowski_product(X: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """
+    inner product on Lorentz manifold, assume R^(1, n) layout
+    :param X: either a 1D array or a 2D matrix
+    :param w: assume 1D (decision plane)
+    """
+    p = X.shape[1]
+
+    # metric tensor
+    G = np.eye(p)
+    G[0, 0] = -1
+
+    # inner product
+    result = -X @ G @ w
+    return result
