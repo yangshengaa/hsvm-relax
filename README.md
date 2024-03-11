@@ -11,7 +11,7 @@ python -m venv hsvm_relax
 source ./hsvm_relax/bin/activate
 
 # install packages
-pip install matplotlib torch toml mosek cvxpy
+pip install matplotlib torch toml mosek cvxpy SumOfSquares
 ```
 
 for `mosek`, one can get an academic license for free from [https://www.mosek.com/products/academic-licenses/](https://www.mosek.com/products/academic-licenses/)

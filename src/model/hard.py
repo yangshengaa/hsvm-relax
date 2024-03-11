@@ -7,8 +7,11 @@ Hard SVM
 """
 
 # load packages
+import warnings
+import sympy as sp
 import numpy as np
 import mosek
+from SumOfSquares import poly_opt_prob
 
 from .SVMBase import SVM
 from .utils import (
@@ -95,7 +98,7 @@ class HyperbolicSVMHard(SVM):
         epochs: int = 100,
         warm_start: bool = True,
         *kargs,
-        **kwargs
+        **kwargs,
     ):
         """
         :param warm_start: True to use Euclidean solution as a starting point, False use random initializations
@@ -152,7 +155,7 @@ class HyperbolicSVMHardSDP(SVM):
         verbose=False,
         solution_type: str = "rank1",
         *kargs,
-        **kwargs
+        **kwargs,
     ):
         """
         after solving the relaxed model, to get back w, we could
@@ -246,6 +249,74 @@ class HyperbolicSVMHardSDP(SVM):
 
     def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
         raise NotImplementedError()
+
+
+class HyperbolicSVMHardSOS(SVM):
+    def fit_binary(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose=False,
+        max_kappa=10,
+        *kargs,
+        **kwargs,
+    ):
+        """
+        testing implementations with SumOfSquares
+        :param max_kappa: maximum relaxation order to take (throw exception afterwards)
+        """
+        # ! python SumOfSquares is too slow !
+
+        # get problem size
+        dim = X.shape[1]
+
+        # formulate problem
+        w_symbolic = sp.symbols([f"w{d}" for d in range(dim)])
+
+        for kappa in range(2, max_kappa):
+            prob = poly_opt_prob(
+                w_symbolic,
+                sum(
+                    [
+                        -w_symbolic[d] ** 2 if d == 0 else w_symbolic[d] ** 2
+                        for d in range(dim)
+                    ]
+                )
+                / 2,
+                ineqs=[
+                    sum(
+                        [
+                            X[n][d] * w_symbolic[d]
+                            if d == 0
+                            else -X[n][d] * w_symbolic[d]
+                            for d in range(dim)
+                        ]
+                    )
+                    * (y[n] * 2 - 1)
+                    - 1
+                    for n in range(X.shape[0])
+                ]  # correct classification
+                + [
+                    sum(
+                        [
+                            -w_symbolic[d] ** 2 if d == 0 else w_symbolic[d] ** 2
+                            for d in range(dim)
+                        ]
+                    )
+                ],  # domain requirement
+                deg=kappa,
+            )
+
+            try:
+                # solve the problem
+                prob.solve(solver="mosek")
+
+                # solution found, exit loop
+                break
+            except:
+                warnings.warn(f"relaxation order kappa = {kappa} failed, increase by 1")
+
+        # TODO: how to retrieve w?
 
 
 # * the following is not used, mosek refuses to solve nonconvex QP
