@@ -29,7 +29,13 @@ class EuclideanSVMHard(SVM):
     """treat hyperbolic data as living in the ambient Euclidean space"""
 
     def fit_binary(
-        self, X: np.ndarray, y: np.ndarray, verbose: bool = False, *kargs, **kwargs
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose: bool = False,
+        k: int = 0,
+        *kargs,
+        **kwargs,
     ):
         num_constraints, d = X.shape
 
@@ -72,21 +78,21 @@ class EuclideanSVMHard(SVM):
             xx = task.getxx(mosek.soltype.itr)
 
             # record solution
-            self.w_ = np.array(xx[:-1])
-            self.b_ = xx[-1]
+            w = np.array(xx[:-1])
+            b = xx[-1]
+
+            self._params[k] = (w, b)
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
-                print("w: \n", self.w_)
-                print("b: \n", self.b_)
+                print("w: \n", self._params[k][0])
+                print("b: \n", self._params[k][1])
 
-    def predict_binary(self, X: np.ndarray, *kargs, **kwargs):
-        decision = ((X @ self.w_ + self.b_) >= 0).astype(int)
-        return decision
-
-    def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        raise NotImplementedError()
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w, b = self._params[k]
+        decision_vals = X @ w + b
+        return decision_vals
 
 
 class HyperbolicSVMHard(SVM):
@@ -153,6 +159,7 @@ class HyperbolicSVMHardSDP(SVM):
         X: np.ndarray,
         y: np.ndarray,
         verbose=False,
+        k: int = 0,
         solution_type: str = "rank1",
         *kargs,
         **kwargs,
@@ -222,33 +229,34 @@ class HyperbolicSVMHardSDP(SVM):
             Z_bar -= np.diag(np.diag(Z_bar)) / 2
 
             # record solution
-            self.W_ = Z_bar[:, :-1][:-1, :]
-            self.z_ = Z_bar[-1, :-1]
+            W_ = Z_bar[:, :-1][:-1, :]
+            z_ = Z_bar[-1, :-1]
+
+            self._params[k] = [W_, z_]
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
-                print("W: \n", self.W_)
-                print("z: \n", self.z_)
+                print("W: \n", self._params[k][0])
+                print("z: \n", self._params[k][1])
 
         # get w
         if solution_type == "rank1":
             # TODO: use LOBPCG to make this faster?
             # eigen-decomposition
-            eigvals, eigvecs = np.linalg.eigh(self.W_)
+            eigvals, eigvecs = np.linalg.eigh(W_)
 
             # take top rank 1 direction
-            self.w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+            w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+            self._params[k].append(w_)
         else:
             # TODO: implement other heuristics
             raise NotImplementedError()
 
-    def predict_binary(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        decision = (minkowski_product(X, self.w_) >= 0).astype(int)
-        return decision
-
-    def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        raise NotImplementedError()
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w = self._params[k][-1]
+        decision_vals = minkowski_product(X, w)
+        return decision_vals
 
 
 class HyperbolicSVMHardSOS(SVM):
@@ -286,9 +294,11 @@ class HyperbolicSVMHardSOS(SVM):
                 ineqs=[
                     sum(
                         [
-                            X[n][d] * w_symbolic[d]
-                            if d == 0
-                            else -X[n][d] * w_symbolic[d]
+                            (
+                                X[n][d] * w_symbolic[d]
+                                if d == 0
+                                else -X[n][d] * w_symbolic[d]
+                            )
                             for d in range(dim)
                         ]
                     )
@@ -317,73 +327,3 @@ class HyperbolicSVMHardSOS(SVM):
                 warnings.warn(f"relaxation order kappa = {kappa} failed, increase by 1")
 
         # TODO: how to retrieve w?
-
-
-# * the following is not used, mosek refuses to solve nonconvex QP
-# class HyperbolicSVMHard(SVM):
-#     """original hyperbolic SVM formulation"""
-
-#     def fit_binary(self, X: np.ndarray, y: np.ndarray, verbose=False, *kargs, **kwargs):
-#         n, d = X.shape
-
-#         # prepare linear constraints
-#         G = np.eye(d)
-#         G[0, 0] = -1.0
-#         A = (X @ G) * y.reshape(-1, 1)
-#         A_entries, A_rows, A_cols = parse_dense_linear_constraints(A)
-
-#         # formulate problem
-#         with mosek.Task() as task:
-#             if verbose:
-#                 task.set_Stream(mosek.streamtype.log, stream_printer)
-
-#             # setup constraints and variables
-#             bkc = [mosek.boundkey.lo] * (n + 1)
-#             blc = [1.0] * n + [0.0]
-#             buc = [+_INF] * (n + 1)
-#             bkx = [mosek.boundkey.fr] * d
-#             blx = [-_INF] * d
-#             bux = [+_INF] * d
-#             task.appendcons(n + 1)
-#             task.appendvars(d)
-#             task.putvarboundlist(range(d), bkx, blx, bux)
-
-#             # specify entries in (-b^T w + 1 <= 0)
-#             task.putaijlist(A_rows, A_cols, A_entries)
-#             # specify quadratic constraint
-#             task.putqconk(
-#                 n,  # the last index of constraint as the quadratic one
-#                 range(d),
-#                 range(d),
-#                 [-1.0] + [1.0] * (d - 1),
-#             )
-#             task.putconboundlist(range(n + 1), bkc, blc, buc)
-
-#             # specify obj
-#             task.putqobj(range(d), range(d), [-1.0] + [1.0] * (d - 1))  # diagonal 1s
-#             task.putobjsense(mosek.objsense.minimize)
-
-#             # run optimizer
-#             task.optimize()
-
-#             # check solution status
-#             solsta = task.getsolsta(mosek.soltype.itr)
-#             check_solution_status(solsta)
-
-#             # get optimal solution
-#             xx = task.getxx(mosek.soltype.itr)
-
-#             # record solution
-#             self.w_ = np.array(xx)
-
-#             if verbose:
-#                 task.solutionsummary(mosek.streamtype.msg)
-#                 print("Optimal Solution: ")
-#                 print("w: \n", self.w_)
-
-#     def predict_binary(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-#         decision = (minkowski_product(X, self.w_) >= 0).astype(int)
-#         return decision
-
-#     def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-#         raise NotImplementedError()

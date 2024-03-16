@@ -29,7 +29,13 @@ class EuclideanSVMSoft(SVM):
         self.C = C
 
     def fit_binary(
-        self, X: np.ndarray, y: np.ndarray, verbose: bool = False, *kargs, **kwargs
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose: bool = False,
+        k: int = 0,
+        *kargs,
+        **kwargs
     ):
         num_constraints, d = X.shape
         num_vars = d + 1 + num_constraints  # introduce \xi
@@ -74,17 +80,19 @@ class EuclideanSVMSoft(SVM):
 
             # record solution
             xx = task.getxxslice(mosek.soltype.itr, 0, d + 1)
-            self.w_ = np.array(xx[:-1])
-            self.b_ = xx[-1]
+            w = np.array(xx[:-1])
+            b = xx[-1]
+
+            # append to self dict
+            self._params[k] = (w, b)
+
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
-                print("w: \n", self.w_)
-                print("b: \n", self.b_)
+                print("w: \n", self._params[k][0])
+                print("b: \n", self._params[k][1])
 
-    def predict_binary(self, X: np.ndarray, *kargs, **kwargs):
-        decision = ((X @ self.w_ + self.b_) >= 0).astype(int)
-        return decision
-
-    def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        raise NotImplementedError()
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w, b = self._params[k]
+        decision_vals = X @ w + b
+        return decision_vals
