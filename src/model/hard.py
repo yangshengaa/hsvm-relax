@@ -118,7 +118,9 @@ class HyperbolicSVMHard(SVM):
         self.seed = seed
         self.warm_start = warm_start
 
-    def fit_binary(self, X: np.ndarray, y: np.ndarray, verbose=False, *kargs, **kwargs):
+    def fit_binary(
+        self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, *kargs, **kwargs
+    ):
         """use gradient descent to solve the problem"""
         # initialize
         w = self._initialize(X, y, verbose=verbose)
@@ -151,6 +153,10 @@ class HyperbolicSVMHard(SVM):
         """project to within the feasible region"""
         pass
         # TODO: implement projection
+
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        pass
+        # TODO: implement decision fucntion
 
 
 class HyperbolicSVMHardSDP(SVM):
@@ -265,6 +271,7 @@ class HyperbolicSVMHardSOS(SVM):
         X: np.ndarray,
         y: np.ndarray,
         verbose=False,
+        k: int = 0,
         max_kappa=10,
         *kargs,
         **kwargs,
