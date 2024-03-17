@@ -9,6 +9,7 @@ Soft SVM
 # load packages
 import numpy as np
 import mosek
+import scipy
 
 from .SVMBase import SVM
 from .utils import (
@@ -216,3 +217,123 @@ class HyperbolicSVMSoftSDP(SVM):
         w = self._params[k][-1]
         decision_vals = minkowski_product(X, w)
         return decision_vals
+
+
+
+class HyperbolicSVMSoft(SVM):
+    def __init__(
+        self,
+        lr: float = 1.0,
+        seed: int = 1,
+        batch_size: int = 128,
+        epochs: int = 100,
+        warm_start: bool = True,
+        *kargs,
+        **kwargs,
+    ):
+        """
+        :param warm_start: True to use Euclidean solution as a starting point, False use random initializations
+        """
+        super().__init__(*kargs, **kwargs)
+
+        # training parameters
+        self.lr = lr
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.seed = seed
+        self.warm_start = warm_start
+
+    def fit_binary(self, X: np.ndarray, y: np.ndarray, verbose=False, *kargs, **kwargs):
+        """use gradient descent to solve the problem"""
+        # initialize
+        w = self._initialize(X, y, verbose=verbose)
+        if not self._is_feasible(w):
+            w = self._projection(w, alpha=0.01)
+        
+        # train 
+        w_new = w
+        best_w = w
+        init_loss = self._loss_fn(w, X, y)
+        min_loss = init_loss
+        for _ in range(self.epochs):
+            current_loss = 0
+            # full batch GD 
+            grad_w = self._grad_fn(w_new, X, y)
+            w_new = w_new - self.lr * grad_w
+            # if not in feasible region, need to use projection
+            if not self._is_feasible(w_new):
+                # solve optimization problem for nearest feasible point
+                alpha_opt = self._alpha_search(w_new)
+                # project w to feasible sub-space
+                w_new = self._projection(w_new, alpha_opt)
+            current_loss = self._loss_fn(w_new, X, y)
+
+            # update loss and estimate 
+            if current_loss < min_loss:
+                min_loss = current_loss
+                best_w = w_new
+    
+        self._params = (best_w[1:], best_w[0])
+
+    def _initialize(
+        self, X: np.ndarray, y: np.ndarray, verbose: bool = False
+    ) -> np.ndarray:
+        """initialize guess of the decision function"""
+        if self.warm_start:
+            model = EuclideanSVMSoft()  # use hard-margin for init
+            if verbose:
+                print("warm start init, solver log below:")
+            model.fit(X, y, verbose=verbose)
+            initial_w = model.w_
+        else:
+            raise NotImplementedError(
+                "it is preferred to provide a warm start for this nonconvex problem"
+            )
+        return initial_w
+
+    def _is_feasible(self, w: np.ndarray) -> bool:
+        """check if the current iterate is strictly feasible"""
+        feasibility = - w[0, 0] ** 2 + np.dot(w[1:].T, w[1:]).squeeze().item()
+        return feasibility > 0
+
+    def _projection(self, w: np.ndarray, alpha: float, eps: float=1e-6) -> np.ndarray:
+        """project w to within the boundary"""
+        proj_w = w.copy()
+        proj_w[1:] = (1 + alpha) * proj_w[1:]
+        first_sgn = 1 if proj_w[0] >= 0 else -1
+        proj_w[[0]] = first_sgn * np.sqrt(np.sum(proj_w[1:] ** 2) - eps)
+        return proj_w
+    
+    def _alpha_search(self, w: np.ndarray) -> float: 
+        """ 
+        use scipy to solve for alpha in projection 
+        """
+        res = scipy.optimize.minimize_scalar(lambda alpha: np.sum((self._projection(w, alpha) - w) ** 2))
+        alpha = res.x
+        return alpha
+    
+    def _loss_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray, C: float=1) -> float:
+        """ compute the loss function, with l1 penalty and squared hinge loss """
+        loss_term = 1 / 2 * (- np.square(w[0, 0]) + np.dot(w[1:].T, w[1:]).item())
+        misclass_term = y.reshape(-1, 1) * (- w[[0]] * X[:, [0]] + X[:, 1:] @ w[1:])
+        misclass_loss = np.arcsinh(1.) - np.arcsinh(- misclass_term)
+        loss = loss_term + C * np.sum(np.where(misclass_loss > 0, misclass_loss, 0))
+        return loss 
+
+    def _grad_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray, C: float=1) -> np.ndarray:
+        """ compute gradient of the loss function """
+        grad_margin = np.vstack((-w[[0]], w[1:]))
+        z = y.reshape(-1, 1) * (- w[[0]] * X[:, [0]] + X[:, 1:] @ w[1:])
+        misclass = (np.arcsinh(1.) - np.arcsinh(- z)) > 0
+        arcsinh_term = -1 / np.sqrt(z ** 2 + 1)
+        mink_prod_term = y.reshape(-1, 1) * np.hstack((X[:, [0]], - X[:, 1:]))
+        grad_misclass = misclass * arcsinh_term * mink_prod_term
+        grad_w = grad_margin + C * np.sum(grad_misclass, axis=0, keepdims=True).T 
+        return grad_w 
+    
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w, b = self._params[k]
+        decision_vals = minkowski_product(X, w)
+        return decision_vals
+        # decision_vals = (X[:, [0]] * b - X[:, 1:] @ w).flatten()
+        # return ((decision_vals > 0) * 2 - 1).astype(int)
