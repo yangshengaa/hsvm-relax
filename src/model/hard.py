@@ -119,7 +119,7 @@ class HyperbolicSVMHard(SVM):
         w = self._initialize(X, y, verbose=verbose)
 
         if not self._is_feasible(w):
-            w = self._projection(w, alpha=0.01)
+            w = self._projection(w, X, y)
         
         # train 
         w_new = w
@@ -134,9 +134,7 @@ class HyperbolicSVMHard(SVM):
             # if not in feasible region, need to use projection
             if not self._is_feasible(w_new):
                 # solve optimization problem for nearest feasible point
-                alpha_opt = self._alpha_search(w_new)
-                # project w to feasible sub-space
-                w_new = self._projection(w_new, alpha_opt)
+                w_new = self._projection(w_new, X, y)
             current_loss = self._loss_fn(w_new, X, y)
 
             # update loss and estimate 
@@ -162,7 +160,7 @@ class HyperbolicSVMHard(SVM):
             )
         return initial_w
 
-    def _is_feasible(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> bool:
+    def _is_feasible(self, w: np.ndarray) -> bool:
         """check if the current iterate is strictly feasible"""
         flag = minkowski_product(w, w) < 0
         return flag
@@ -209,34 +207,19 @@ class HyperbolicSVMHard(SVM):
             xx = task.getxx(mosek.soltype.itr)
 
             # record solution
-            self.w_ = np.array(xx[:-1])
-            self.b_ = xx[-1]
+            w = np.array(xx[:-1])
+            b = xx[-1]
+        
+        return w
     
-    def _alpha_search(self, w: np.ndarray) -> float: 
-        """ 
-        use scipy to solve for alpha in projection 
-        """
-        res = scipy.optimize.minimize_scalar(lambda alpha: np.sum((self._projection(w, alpha) - w) ** 2))
-        alpha = res.x
-        return alpha
-    
-    def _loss_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray, C: float=1) -> float:
+    def _loss_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
         """ compute the loss function, with l1 penalty and squared hinge loss """
-        loss_term = 1 / 2 * (- np.square(w[0, 0]) + np.dot(w[1:].T, w[1:]).item())
-        misclass_term = y.reshape(-1, 1) * (- w[[0]] * X[:, [0]] + X[:, 1:] @ w[1:])
-        misclass_loss = np.arcsinh(1.) - np.arcsinh(- misclass_term)
-        loss = loss_term + C * np.sum(np.where(misclass_loss > 0, misclass_loss, 0))
+        loss = 1 / 2 * (- np.square(w[0, 0]) + np.dot(w[1:].T, w[1:]).item())
         return loss 
 
-    def _grad_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray, C: float=1) -> np.ndarray:
+    def _grad_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         """ compute gradient of the loss function """
-        grad_margin = np.vstack((-w[[0]], w[1:]))
-        z = y.reshape(-1, 1) * (- w[[0]] * X[:, [0]] + X[:, 1:] @ w[1:])
-        misclass = (np.arcsinh(1.) - np.arcsinh(- z)) > 0
-        arcsinh_term = -1 / np.sqrt(z ** 2 + 1)
-        mink_prod_term = y.reshape(-1, 1) * np.hstack((X[:, [0]], - X[:, 1:]))
-        grad_misclass = misclass * arcsinh_term * mink_prod_term
-        grad_w = grad_margin + C * np.sum(grad_misclass, axis=0, keepdims=True).T 
+        grad_w = np.vstack((-w[[0]], w[1:]))
         return grad_w 
 
 
