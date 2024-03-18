@@ -160,19 +160,24 @@ class HyperbolicSVMHard(SVM):
             )
         return initial_w
 
-    def _is_feasible(self, w: np.ndarray) -> bool:
+    def _is_feasible(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> bool:
         """check if the current iterate is strictly feasible"""
-        flag = minkowski_product(w, w) < 0
-        return flag
+        hyperbolic_boundary = minkowski_product(w, w) < 0
+        G = np.eye(d)
+        G[0,0] = -1
+        B = (X @ -G) * y.reshape(-1,1)
+        separable = B @ w >=1
+
+        return hyperbolic_boundary and separable
 
     def _projection(self, wt: np.ndarray, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         """project to within the feasible region"""
         num_constraints, d = X.shape
 
         G = np.eye(d)
-        G[0,0] = 1
-        A = (X @ -G) * y.reshape(-1,1)
-        A_entries, A_cols, A_rows= parse_dense_linear_constraints(A)
+        G[0,0] = -1
+        B = (X @ -G) * y.reshape(-1,1)
+        B_entries, B_cols, B_rows= parse_dense_linear_constraints(B)
         # formulate problem
         with mosek.Task() as task:
 
@@ -188,11 +193,11 @@ class HyperbolicSVMHard(SVM):
             task.putvarboundlist(range(d), bkx, blx, bux)
 
             # add constraints
-            task.putaijlist(A_rows, A_cols, A_entries)
+            task.putaijlist(B_rows, B_cols, B_entries)
             task.putconboundlist(range(num_constraints), bkc, blc, buc)
 
             # specify obj
-            task.putqobj(range(d), range(d), [1/2] * d) 
+            task.putqobj(range(d), range(d), [1] * d) 
             task.putclist(range(d), -wt)
             task.putobjsense(mosek.objsense.minimize)
 
@@ -204,13 +209,9 @@ class HyperbolicSVMHard(SVM):
             check_solution_status(solsta)
 
             # get optimal solution
-            xx = task.getxx(mosek.soltype.itr)
-
-            # record solution
-            w = np.array(xx[:-1])
-            b = xx[-1]
-        
-        return w
+            xx = task.getxx(mosek.soltype.itr)  
+                 
+        return xx
     
     def _loss_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
         """ compute the loss function, with l1 penalty and squared hinge loss """
