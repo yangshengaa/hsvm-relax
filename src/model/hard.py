@@ -239,22 +239,23 @@ class HyperbolicSVMHard(SVM):
 
 
 class HyperbolicSVMHardSDP(SVM):
+    def __init__(self, redundant=True, *kargs, **kwargs):
+        """
+        :param redundant: add redundant constraint to make better estimation of W
+        trick from MIT Robust Optimization
+        """
+        super().__init__(*kargs, **kwargs)
+        self.redundant = redundant
+
     def fit_binary(
         self,
         X: np.ndarray,
         y: np.ndarray,
         verbose=False,
         k: int = 0,
-        solution_type: str = "rank1",
         *kargs,
         **kwargs,
     ):
-        """
-        after solving the relaxed model, to get back w, we could
-        - "rank1": take rank1 decomposition of W
-        - "rank1-gd": take rank1 decomposition and run a couple of projected SGD
-        - "gaussian": draw random sample from N(z, W - zz^T) with the best in-sample classification performance
-        """
         n, d = X.shape
         Z_dim = d + 1  # implement Z = [W, z; z^T, 1]
 
@@ -263,7 +264,29 @@ class HyperbolicSVMHardSDP(SVM):
         G[0, 0] = -1.0
 
         # only specify lower triangular part, divide by 2
-        A_flatten = (((X @ -G) * y.reshape(-1, 1)).flatten() / 2).tolist()
+        B = (X @ -G) * y.reshape(-1, 1)
+        A_flatten = (B.flatten() / 2).tolist()
+
+        # process redundant constraints
+        if self.redundant:
+            val_ijkl_red = []
+            tril_rows, tril_cols = np.tril_indices(Z_dim)
+            idx_k_list_red = tril_rows.tolist() * n
+            idx_l_list_red = tril_cols.tolist() * n
+            idxc_red = np.hstack(
+                [
+                    np.ones((len(tril_rows),), dtype=int) * k
+                    for k in range(n + 2, 2 * n + 2)
+                ]
+            ).tolist()
+            # append values
+            for i in range(n):
+                # parse redundant constraints
+                b_i = B[[i]].T
+                redundant_mat = np.vstack(
+                    (np.hstack((b_i @ b_i.T, b_i)), np.hstack((b_i.T, np.ones((1, 1)))))
+                )
+                val_ijkl_red += redundant_mat[(tril_rows, tril_cols)].tolist()
 
         # formulate problem
         with mosek.Task() as task:
@@ -274,8 +297,13 @@ class HyperbolicSVMHardSDP(SVM):
             bkc = [mosek.boundkey.lo] * (n + 1) + [mosek.boundkey.fx]
             blc = [1.0] * n + [0.0, 1.0]
             buc = [+_INF] * (n + 1) + [1.0]
-            task.appendcons(n + 2)
-            task.putconboundlist(range(n + 2), bkc, blc, buc)
+            if self.redundant:
+                bkc += [mosek.boundkey.lo] * n
+                blc += [0.0] * n
+                buc += [+_INF] * n
+            num_constraints = len(bkc)
+            task.appendcons(num_constraints)
+            task.putconboundlist(range(num_constraints), bkc, blc, buc)
             task.appendbarvars([Z_dim])
 
             # add constraints to the system
@@ -284,10 +312,17 @@ class HyperbolicSVMHardSDP(SVM):
                 + [n] * d
                 + [n + 1]
             )
-            sdp_var_idx = [0] * len(idxc)  # all on the same SDP variable
             idx_k_list = [d] * (d * n) + list(range(d)) + [d]
             idx_l_list = list(range(d)) * n + list(range(d)) + [d]
             val_ijkl = A_flatten + [-1.0] + [1.0] * (d - 1) + [1.0]
+            # add redundant
+            if self.redundant:
+                idxc += idxc_red
+                idx_k_list += idx_k_list_red
+                idx_l_list += idx_l_list_red
+                val_ijkl += val_ijkl_red
+            sdp_var_idx = [0] * len(idxc)  # all on the same SDP variable
+            # communicate with task at once
             task.putbarablocktriplet(
                 idxc, sdp_var_idx, idx_k_list, idx_l_list, val_ijkl
             )
@@ -317,31 +352,85 @@ class HyperbolicSVMHardSDP(SVM):
             W_ = Z_bar[:, :-1][:-1, :]
             z_ = Z_bar[-1, :-1]
 
-            self._params[k] = [W_, z_]
+            # get w
+            w_ = self._get_optima(W_, z_, X, y)
+            solution_value = (w_ * (G @ w_)).sum() / 2
+            self._params[k] = [W_, z_, w_]
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
                 print("W: \n", self._params[k][0])
                 print("z: \n", self._params[k][1])
-
-        # get w
-        if solution_type == "rank1":
-            # TODO: use LOBPCG to make this faster?
-            # eigen-decomposition
-            eigvals, eigvecs = np.linalg.eigh(W_)
-
-            # take top rank 1 direction
-            w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
-            self._params[k].append(w_)
-        else:
-            # TODO: implement other heuristics
-            raise NotImplementedError()
+                print(f"Solution Value: {solution_value:.4f}")
 
     def decision_function(self, X: np.ndarray, k: int = 0):
         w = self._params[k][-1]
         decision_vals = minkowski_product(X, w)
         return decision_vals
+
+    def _get_optima(
+        self,
+        W: np.ndarray,
+        z: np.ndarray,
+        X: np.ndarray,
+        y: np.ndarray,
+        num_random: int = 10,
+    ) -> np.ndarray:
+        """
+        heuristic methods to extract the optimal w from (W, z) solved
+        we search for the following candidates
+        - z
+        - rank 1 component of W
+        - columns divided by z (from MIT Robust Optimization)
+        - Gaussian Randomization (from Stanford Lecture)
+
+        in hard margin we take the solution that is feasible and has the lowest cost
+        if none satisfy all constraints, we take the rank1 component
+
+        :param W, z: obtained by solver
+        :param X, y: given data
+        :param num_random
+        :return w: the optima classification boundary
+        """
+        # z
+        candidates = [z]
+
+        # rank 1 component
+        eigvals, eigvecs = np.linalg.eigh(W)
+        w_r1 = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+        candidates.append(w_r1)
+
+        # column divisions
+        candidates.append((W / z).T)
+
+        # gaussian randomization N(z, W - zz^T)
+        random_solutions = (
+            np.random.normal(0, 1, size=(num_random, len(z)))
+            @ np.linalg.cholesky(W - np.outer(z, z)).T
+            + z
+        )
+        candidates.append(random_solutions)
+
+        candidates = np.vstack(candidates)
+
+        # vectorized feasibility check
+        d = X.shape[1]
+        G = np.eye(d)
+        G[0, 0] = -1.0
+        B = (X @ -G) * y.reshape(-1, 1)
+        separable = (B @ candidates.T >= 1).all(axis=0)
+        costs = (candidates * (candidates @ G)).sum(axis=-1)
+        feasible = costs >= 0
+        feasible_candidates = candidates[separable & feasible]
+        feasible_costs = costs[separable & feasible]
+
+        # get the solution with minimal cost
+        if len(feasible_candidates) > 0:
+            w = feasible_candidates[np.argmin(feasible_costs)]
+        else:
+            w = candidates[1]  # the rank1 solution
+        return w
 
 
 class HyperbolicSVMHardSOS(SVM):
