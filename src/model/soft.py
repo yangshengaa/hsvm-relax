@@ -276,6 +276,12 @@ class HyperbolicSVMSoft(SVM):
                 best_w = w_new
 
         self._params[k] = best_w
+        solution_value = self._loss_fn(best_w, X, y)
+
+        if verbose:
+            print("Optimal Solution: ")
+            print("w: \n", self._params[k])
+            print(f"Solution Value: {solution_value:.4f}")
 
     def _initialize(
         self, X: np.ndarray, y: np.ndarray, verbose: bool = False
