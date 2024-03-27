@@ -255,6 +255,9 @@ class HyperbolicSVMSoftSDP(SVM):
         G = np.eye(d)
         G[0, 0] = -1.0
         B = (X @ -G) * y.reshape(-1, 1)
+        # filter feasible candidates
+        feasible = (candidates * (candidates @ G)).sum(axis=-1) >= 0
+        candidates = candidates[feasible]
         slackness = np.clip(
             np.arcsinh(1) - np.arcsinh(B @ candidates.T), a_min=0.0, a_max=None
         )
