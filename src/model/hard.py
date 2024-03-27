@@ -30,7 +30,13 @@ class EuclideanSVMHard(SVM):
     """treat hyperbolic data as living in the ambient Euclidean space"""
 
     def fit_binary(
-        self, X: np.ndarray, y: np.ndarray, verbose: bool = False, *kargs, **kwargs
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose: bool = False,
+        k: int = 0,
+        *kargs,
+        **kwargs,
     ):
         num_constraints, d = X.shape
 
@@ -73,21 +79,21 @@ class EuclideanSVMHard(SVM):
             xx = task.getxx(mosek.soltype.itr)
 
             # record solution
-            self.w_ = np.array(xx[:-1])
-            self.b_ = xx[-1]
+            w = np.array(xx[:-1])
+            b = xx[-1]
+
+            self._params[k] = (w, b)
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
-                print("w: \n", self.w_)
-                print("b: \n", self.b_)
+                print("w: \n", self._params[k][0])
+                print("b: \n", self._params[k][1])
 
-    def predict_binary(self, X: np.ndarray, *kargs, **kwargs):
-        decision = ((X @ self.w_ + self.b_) >= 0).astype(int)
-        return decision
-
-    def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        raise NotImplementedError()
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w, b = self._params[k]
+        decision_vals = X @ w + b
+        return decision_vals
 
 
 class HyperbolicSVMHard(SVM):
@@ -113,36 +119,39 @@ class HyperbolicSVMHard(SVM):
         self.seed = seed
         self.warm_start = warm_start
 
-    def fit_binary(self, X: np.ndarray, y: np.ndarray, verbose=False, *kargs, **kwargs):
+    def fit_binary(
+        self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, *kargs, **kwargs
+    ):
         """use gradient descent to solve the problem"""
         # initialize
         w = self._initialize(X, y, verbose=verbose)
 
-        if not self._is_feasible(w):
+        if not self._is_feasible(w, X, y):
             w = self._projection(w, X, y)
-        
-        # train 
+
+        # train
+        # TODO: add minibatch
         w_new = w
         best_w = w
         init_loss = self._loss_fn(w, X, y)
         min_loss = init_loss
         for _ in range(self.epochs):
             current_loss = 0
-            # full batch GD 
+            # full batch GD
             grad_w = self._grad_fn(w_new, X, y)
             w_new = w_new - self.lr * grad_w
             # if not in feasible region, need to use projection
-            if not self._is_feasible(w_new):
+            if not self._is_feasible(w_new, X, y):
                 # solve optimization problem for nearest feasible point
                 w_new = self._projection(w_new, X, y)
             current_loss = self._loss_fn(w_new, X, y)
 
-            # update loss and estimate 
+            # update loss and estimate
             if current_loss < min_loss:
                 min_loss = current_loss
                 best_w = w_new
-    
-        self._params = (best_w[1:], best_w[0])
+
+        self._params[k] = best_w
 
     def _initialize(
         self, X: np.ndarray, y: np.ndarray, verbose: bool = False
@@ -153,7 +162,7 @@ class HyperbolicSVMHard(SVM):
             if verbose:
                 print("warm start init, solver log below:")
             model.fit(X, y, verbose=verbose)
-            initial_w = model.w_
+            initial_w = model._params[0][0]
         else:
             raise NotImplementedError(
                 "it is preferred to provide a warm start for this nonconvex problem"
@@ -162,11 +171,12 @@ class HyperbolicSVMHard(SVM):
 
     def _is_feasible(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> bool:
         """check if the current iterate is strictly feasible"""
-        hyperbolic_boundary = minkowski_product(w, w) < 0
+        d = X.shape[1]
+        hyperbolic_boundary = (-w[0] ** 2 + np.dot(w[1:], w[1:]).item()) < 0
         G = np.eye(d)
-        G[0,0] = -1
-        B = (X @ -G) * y.reshape(-1,1)
-        separable = B @ w >=1
+        G[0, 0] = -1
+        B = (X @ -G) * y.reshape(-1, 1)
+        separable = (B @ w >= 1).all()
 
         return hyperbolic_boundary and separable
 
@@ -175,12 +185,11 @@ class HyperbolicSVMHard(SVM):
         num_constraints, d = X.shape
 
         G = np.eye(d)
-        G[0,0] = -1
-        B = (X @ -G) * y.reshape(-1,1)
-        B_entries, B_cols, B_rows= parse_dense_linear_constraints(B)
+        G[0, 0] = -1
+        B = (X @ -G) * y.reshape(-1, 1)
+        B_entries, B_rows, B_cols = parse_dense_linear_constraints(B)
         # formulate problem
         with mosek.Task() as task:
-
             # setup constraints and variables
             bkc = [mosek.boundkey.lo] * num_constraints
             blc = [1.0] * num_constraints
@@ -197,7 +206,7 @@ class HyperbolicSVMHard(SVM):
             task.putconboundlist(range(num_constraints), bkc, blc, buc)
 
             # specify obj
-            task.putqobj(range(d), range(d), [1] * d) 
+            task.putqobj(range(d), range(d), [1] * d)
             task.putclist(range(d), -wt)
             task.putobjsense(mosek.objsense.minimize)
 
@@ -209,19 +218,24 @@ class HyperbolicSVMHard(SVM):
             check_solution_status(solsta)
 
             # get optimal solution
-            xx = task.getxx(mosek.soltype.itr)  
-                 
+            xx = np.array(task.getxx(mosek.soltype.itr))
+
         return xx
-    
+
     def _loss_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
-        """ compute the loss function, with l1 penalty and squared hinge loss """
-        loss = 1 / 2 * (- np.square(w[0, 0]) + np.dot(w[1:].T, w[1:]).item())
-        return loss 
+        """compute the loss function, with l1 penalty and squared hinge loss"""
+        loss = 1 / 2 * (-np.square(w[0]) + np.dot(w[1:].T, w[1:]).item())
+        return loss
 
     def _grad_fn(self, w: np.ndarray, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """ compute gradient of the loss function """
-        grad_w = np.vstack((-w[[0]], w[1:]))
-        return grad_w 
+        """compute gradient of the loss function"""
+        grad_w = np.hstack((-w[0], w[1:]))
+        return grad_w
+
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w = self._params[k]
+        decision_vals = minkowski_product(X, w)
+        return decision_vals
 
 
 class HyperbolicSVMHardSDP(SVM):
@@ -230,6 +244,7 @@ class HyperbolicSVMHardSDP(SVM):
         X: np.ndarray,
         y: np.ndarray,
         verbose=False,
+        k: int = 0,
         solution_type: str = "rank1",
         *kargs,
         **kwargs,
@@ -299,33 +314,34 @@ class HyperbolicSVMHardSDP(SVM):
             Z_bar -= np.diag(np.diag(Z_bar)) / 2
 
             # record solution
-            self.W_ = Z_bar[:, :-1][:-1, :]
-            self.z_ = Z_bar[-1, :-1]
+            W_ = Z_bar[:, :-1][:-1, :]
+            z_ = Z_bar[-1, :-1]
+
+            self._params[k] = [W_, z_]
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
-                print("W: \n", self.W_)
-                print("z: \n", self.z_)
+                print("W: \n", self._params[k][0])
+                print("z: \n", self._params[k][1])
 
         # get w
         if solution_type == "rank1":
             # TODO: use LOBPCG to make this faster?
             # eigen-decomposition
-            eigvals, eigvecs = np.linalg.eigh(self.W_)
+            eigvals, eigvecs = np.linalg.eigh(W_)
 
             # take top rank 1 direction
-            self.w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+            w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+            self._params[k].append(w_)
         else:
             # TODO: implement other heuristics
             raise NotImplementedError()
 
-    def predict_binary(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        decision = (minkowski_product(X, self.w_) >= 0).astype(int)
-        return decision
-
-    def predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        raise NotImplementedError()
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w = self._params[k][-1]
+        decision_vals = minkowski_product(X, w)
+        return decision_vals
 
 
 class HyperbolicSVMHardSOS(SVM):
