@@ -113,16 +113,9 @@ class HyperbolicSVMSoftSDP(SVM):
         y: np.ndarray,
         verbose: bool = False,
         k: int = 0,
-        solution_type: str = "rank1",
         *kargs,
         **kwargs,
     ):
-        """
-        after solving the relaxed model, to get back w, we could
-        - "rank1": take rank1 decomposition of W
-        - "rank1-gd": take rank1 decomposition and run a couple of projected SGD
-        - "gaussian": draw random sample from N(z, W - zz^T) with the best in-sample classification performance
-        """
         n, d = X.shape
         Z_dim = d + 1  # implement Z = [W, z; z^T, 1]
 
@@ -131,7 +124,8 @@ class HyperbolicSVMSoftSDP(SVM):
         G[0, 0] = -1.0
 
         # only specify lower triangular part, divide by 2
-        A_flatten = (((X @ -G) * y.reshape(-1, 1)).flatten() / 2).tolist()
+        B = (X @ -G) * y.reshape(-1, 1)
+        A_flatten = (B.flatten() / 2).tolist()
 
         # formulate problem
         with mosek.Task() as task:
@@ -192,31 +186,85 @@ class HyperbolicSVMSoftSDP(SVM):
             W_ = Z_bar[:, :-1][:-1, :]
             z_ = Z_bar[-1, :-1]
 
-            self._params[k] = [W_, z_]
+            # get w using heuristic methods
+            w_ = self._get_optima(W_, z_, X, y)
+            solution_value = (-w_[0] ** 2 + w_[1] ** 2) / 2 + np.clip(
+                np.arcsinh(1) - np.arcsinh(B @ w_), a_min=0.0, a_max=None
+            ).sum() * self.C
+            self._params[k] = [W_, z_, w_]
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
                 print("W: \n", self._params[k][0])
                 print("z: \n", self._params[k][1])
-
-        # get w
-        if solution_type == "rank1":
-            # TODO: use LOBPCG to make this faster?
-            # eigen-decomposition
-            eigvals, eigvecs = np.linalg.eigh(W_)
-
-            # take top rank 1 direction
-            w_ = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
-            self._params[k].append(w_)
-        else:
-            # TODO: implement other heuristics
-            raise NotImplementedError()
+                print(f"Optimal Value: {solution_value:.4f}")
 
     def decision_function(self, X: np.ndarray, k: int = 0):
         w = self._params[k][-1]
         decision_vals = minkowski_product(X, w)
         return decision_vals
+
+    def _get_optima(
+        self,
+        W: np.ndarray,
+        z: np.ndarray,
+        X: np.ndarray,
+        y: np.ndarray,
+        num_random: int = 10,
+    ) -> np.ndarray:
+        """
+        heuristic methods to extract the optimal w from (W, z) solved
+        we search for the following candidates
+        - z
+        - rank 1 component of W
+        - columns divided by z (from MIT Robust Optimization)
+        - Gaussian Randomization (from Stanford Lecture)
+
+        in soft margin we take the solution that has the lowest overall cost only
+        here we take the arcsinh original formulation
+
+        :param W, z: obtained by solver
+        :param X, y: given data
+        :param num_random
+        :return w: the optima classification boundary
+        """
+        # z
+        candidates = [z]
+
+        # rank 1 component
+        eigvals, eigvecs = np.linalg.eigh(W)
+        w_r1 = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+        candidates.append(w_r1)
+
+        # column divisions
+        candidates.append((W / z).T)
+
+        # gaussian randomization N(z, W - zz^T)
+        random_solutions = (
+            np.random.normal(0, 1, size=(num_random, len(z)))
+            @ np.linalg.cholesky(W - np.outer(z, z)).T
+            + z
+        )
+        candidates.append(random_solutions)
+
+        candidates = np.vstack(candidates)
+
+        # vectorized slackness computations
+        d = X.shape[1]
+        G = np.eye(d)
+        G[0, 0] = -1.0
+        B = (X @ -G) * y.reshape(-1, 1)
+        slackness = np.clip(
+            np.arcsinh(1) - np.arcsinh(B @ candidates.T), a_min=0.0, a_max=None
+        )
+        costs = (candidates * (candidates @ G)).sum() / 2 + self.C * slackness.sum(
+            axis=0
+        )
+
+        # get candidate with the min cost
+        w = candidates[np.argmin(costs)]
+        return w
 
 
 class HyperbolicSVMSoft(SVM):
