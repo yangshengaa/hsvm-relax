@@ -245,7 +245,7 @@ class HyperbolicSVMHard(SVM):
 
 
 class HyperbolicSVMHardSDP(SVM):
-    def __init__(self, redundant=True, *kargs, **kwargs):
+    def __init__(self, redundant=False, *kargs, **kwargs):
         """
         :param redundant: add redundant constraint to make better estimation of W
         trick from MIT Robust Optimization
@@ -474,9 +474,11 @@ class HyperbolicSVMHardSOS(SVM):
                 ineqs=[
                     sum(
                         [
-                            X[n][d] * w_symbolic[d]
-                            if d == 0
-                            else -X[n][d] * w_symbolic[d]
+                            (
+                                X[n][d] * w_symbolic[d]
+                                if d == 0
+                                else -X[n][d] * w_symbolic[d]
+                            )
                             for d in range(dim)
                         ]
                     )
