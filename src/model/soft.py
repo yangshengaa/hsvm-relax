@@ -273,6 +273,7 @@ class HyperbolicSVMSoftSDP(SVM):
 class HyperbolicSVMSoft(SVM):
     def __init__(
         self,
+        C: float = 1.0,
         lr: float = 1.0,
         seed: int = 1,
         batch_size: int = 128,
@@ -293,6 +294,9 @@ class HyperbolicSVMSoft(SVM):
         self.seed = seed
         self.warm_start = warm_start
 
+        # penalization strength
+        self.C = C
+
     def fit_binary(
         self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, *kargs, **kwargs
     ):
@@ -306,7 +310,7 @@ class HyperbolicSVMSoft(SVM):
         # TODO: add minibatch
         w_new = w
         best_w = w
-        init_loss = self._loss_fn(w, X, y)
+        init_loss = self._loss_fn(w, X, y, self.C)
         min_loss = init_loss
         for _ in range(self.epochs):
             current_loss = 0
@@ -319,7 +323,7 @@ class HyperbolicSVMSoft(SVM):
                 alpha_opt = self._alpha_search(w_new)
                 # project w to feasible sub-space
                 w_new = self._projection(w_new, alpha_opt)
-            current_loss = self._loss_fn(w_new, X, y)
+            current_loss = self._loss_fn(w_new, X, y, self.C)
 
             # update loss and estimate
             if current_loss < min_loss:
@@ -327,7 +331,7 @@ class HyperbolicSVMSoft(SVM):
                 best_w = w_new
 
         self._params[k] = best_w
-        solution_value = self._loss_fn(best_w, X, y)
+        solution_value = self._loss_fn(best_w, X, y, self.C)
 
         if verbose:
             print("Optimal Solution: ")
