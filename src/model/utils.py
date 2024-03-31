@@ -78,6 +78,16 @@ def minkowski_product(X: np.ndarray, w: np.ndarray) -> np.ndarray:
     result = -X @ G @ w
     return result
 
+def get_decision_boundary(w: np.ndarray) -> Tuple[np.ndarray, float]:
+    """
+    get the center and radius of the circle marking the decision boundary given by w (on Poincare space)
+    """
+    w0 = w[0]
+    wr = w[1:]
+    center = wr / w0
+    radius = np.sqrt((wr ** 2).sum() / w0 ** 2 - 1)
+    return center, radius
+
 
 # ================================================================
 # ------------ platt scaling related -----------------------------

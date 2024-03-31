@@ -198,6 +198,7 @@ class HyperbolicSVMSoftSDP(SVM):
                 print("Optimal Solution: ")
                 print("W: \n", self._params[k][0])
                 print("z: \n", self._params[k][1])
+                print("w: \n", self._params[k][2])
                 print(f"Optimal Value: {solution_value:.4f}")
 
     def decision_function(self, X: np.ndarray, k: int = 0):
