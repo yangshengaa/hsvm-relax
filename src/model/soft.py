@@ -8,10 +8,13 @@ Soft SVM
 
 # load packages
 import warnings
+from math import comb
+from typing import List
 import numpy as np
 import mosek
 import scipy
 import sympy as sp
+from sympy.core.symbol import Symbol
 from SumOfSquares import poly_opt_prob
 
 from .SVMBase import SVM
@@ -21,6 +24,7 @@ from .utils import (
     parse_sparse_linear_constraints,
     minkowski_product,
 )
+from .sos_utils import monomials
 
 # for symbolic placeholders
 _INF = 0.0
@@ -412,12 +416,22 @@ class HyperbolicSVMSoft(SVM):
         decision_vals = minkowski_product(X, w)
         return decision_vals
 
+
 class HyperbolicSVMSoftSOS(SVM):
     def __init__(self, C: float = 1.0, *kargs, **kwargs):
         super().__init__(*kargs, **kwargs)
         self.C = C
 
-    def fit_binary(self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, max_kappa=10, *kargs, **kwargs):
+    def fit_binary(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose=False,
+        k: int = 0,
+        max_kappa=10,
+        *kargs,
+        **kwargs,
+    ):
         # get problem size
         n, dim = X.shape
 
@@ -426,22 +440,28 @@ class HyperbolicSVMSoftSOS(SVM):
         xi = sp.symbols(f"xi1:{n+1}")
         decision_vars = (*w, *xi)
 
-        obj = ((-w[0] ** 2 + sum(w[i] ** 2 for i in range(1, dim))) / 2 +
-            self.C * sum(xi)
+        obj = (-w[0] ** 2 + sum(w[i] ** 2 for i in range(1, dim))) / 2 + self.C * sum(
+            xi
         )
         # add inequality constraints
         inequalities = []
         for i in range(n):
-            cur_inequality = y[i] * (X[i][0] * w[0] - sum(X[i][k] * w[k] for k in range(1, dim))) + np.sqrt(2) * xi[i] - 1
+            cur_inequality = (
+                y[i] * (X[i][0] * w[0] - sum(X[i][k] * w[k] for k in range(1, dim)))
+                + np.sqrt(2) * xi[i]
+                - 1
+            )
             inequalities.append(cur_inequality)
             inequalities.append(xi[i])
         inequalities.append(-w[0] ** 2 + sum(w[k] ** 2 for k in range(1, dim)))
         # no equality constraints
         equalities = []
-        
-        # formulate problem 
+
+        # formulate problem
         for kappa in range(3, max_kappa):
-            prob = poly_opt_prob(decision_vars, obj, eqs=equalities, ineqs=inequalities, deg=kappa)
+            prob = poly_opt_prob(
+                decision_vars, obj, eqs=equalities, ineqs=inequalities, deg=kappa
+            )
             try:
                 # solve the problem
                 prob.solve(solver="mosek")
@@ -450,5 +470,230 @@ class HyperbolicSVMSoftSOS(SVM):
                 print(prob.value)
                 break
             except:
-                warnings.warn(
-                    f"relaxation order kappa = {kappa} failed, increase by 1")
+                warnings.warn(f"relaxation order kappa = {kappa} failed, increase by 1")
+
+
+class HyperbolicSVMSoftSOSDual(SVM):
+    def __init__(self, C: float = 1.0, *kargs, **kwargs):
+        super().__init__(*kargs, **kwargs)
+        self.C = C
+
+    def _get_moment_matrix_svec(
+        self, basis: List[Symbol], y_symbolic: List[Symbol]
+    ) -> np.ndarray:
+        """
+        parse moment matrix constraint
+
+        TODO
+        """
+        monomial_idx_map = dict(zip(y_symbolic, range(len(y_symbolic))))
+        num_rows = int(len(basis) * (len(basis) + 1) / 2)
+        moment_matrix_svec = np.zeros((num_rows, len(y_symbolic)))
+
+        # populate moment matrix (svec)
+        row_idx = 0
+        for i in range(len(basis)):
+            for j in range(i + 1):
+                cur_monomial = basis[i] * basis[j]
+                cur_idx = monomial_idx_map[cur_monomial]
+                moment_matrix_svec[row_idx][cur_idx] = 1 if (i == j) else np.sqrt(2)
+                row_idx += 1
+
+        return moment_matrix_svec
+
+    def _get_localizing_matrix_svec(
+        self,
+        kappa: int,
+        decision_vars: List[Symbol],
+        y_symbolic,
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> np.ndarray:
+        """
+        parse localizing matrix constraint
+        """
+        # prepare data
+        N, dim = X.shape
+        G_prime = -np.eye(dim)
+        G_prime[0, 0] = 1
+        B = y.reshape(-1, 1) * (X @ G_prime)
+
+        monomial_idx_map = dict(zip(y_symbolic, range(len(y_symbolic))))
+
+        # in this problem, all constraints have max degree 2
+        # so the localizing matrix has basis kappa - 1
+        basis_con = monomials(decision_vars, range(kappa))
+
+        # cache basis_con outer products
+        basis_monomial_idx_map = {}
+        for i in range(len(basis_con)):
+            for j in range(i + 1):
+                basis_monomial_idx_map[(i, j)] = basis_con[i] * basis_con[j]
+
+        num_rows = int(len(basis_con) * (len(basis_con) + 1) / 2)
+        localizing_matrix_svec_list = []
+        for n in range(N):
+            # \xi_i >= 0
+            cur_localizing_matrix_svec_xi = np.zeros((num_rows, len(y_symbolic)))
+
+            # y_i (x_i * w) + sqrt(2) - 1 >= 0
+            cur_localizing_matrix_svec_cls = np.zeros((num_rows, len(y_symbolic)))
+
+            row_idx = 0
+            for i in range(len(basis_con)):
+                for j in range(i + 1):
+                    cached = basis_monomial_idx_map[(i, j)]
+
+                    # xi
+                    xi_n = decision_vars[dim + n]
+                    idx = monomial_idx_map[xi_n * cached]
+                    cur_localizing_matrix_svec_xi[row_idx, idx] = (
+                        1 if (i == j) else np.sqrt(2)
+                    )
+
+                    # cls
+                    # xi
+                    cur_localizing_matrix_svec_cls[row_idx, idx] = (
+                        np.sqrt(2) if (i == j) else 2
+                    )
+                    # w0, w1, ...
+                    for d in range(dim):
+                        wd = decision_vars[d]
+                        idx = monomial_idx_map[cached * wd]
+                        val = B[n][d]
+                        cur_localizing_matrix_svec_cls[row_idx, idx] = (
+                            val if (i == j) else np.sqrt(2) * val
+                        )
+                    # -1
+                    cur_localizing_matrix_svec_cls[
+                        row_idx, monomial_idx_map[cached]
+                    ] = (-1 if (i == j) else -np.sqrt(2))
+
+                    row_idx += 1
+
+            localizing_matrix_svec_list.append(cur_localizing_matrix_svec_xi)
+            localizing_matrix_svec_list.append(cur_localizing_matrix_svec_cls)
+
+        # w^T G w >= 0
+        cur_localizing_matrix_svec_valid = np.zeros((num_rows, len(y_symbolic)))
+        row_idx = 0
+        for i in range(len(basis_con)):
+            for j in range(i + 1):
+                cached = basis_monomial_idx_map[(i, j)]
+                for d in range(dim):
+                    wd = decision_vars[d]
+                    cur_term = wd**2
+                    idx = monomial_idx_map[cur_term * cached]
+                    if d == 0:
+                        cur_localizing_matrix_svec_valid[row_idx, idx] = (
+                            -1 if (i == j) else -np.sqrt(2)
+                        )
+                    else:
+                        cur_localizing_matrix_svec_valid[row_idx, idx] = (
+                            1 if (i == j) else np.sqrt(2)
+                        )
+                row_idx += 1
+
+        localizing_matrix_svec_list.append(cur_localizing_matrix_svec_valid)
+        return localizing_matrix_svec_list
+
+    def _get_cj(self, w: List[Symbol], xi: List[Symbol], y_symbolic: List[Symbol]):
+        """
+        get cj
+        """
+        c_idx = []
+        c_val = []
+
+        # populate w
+        for d, wd in enumerate(w):
+            c_idx.append(y_symbolic.index(wd**2))
+            c_val.append(1 / 2 if (d > 0) else -1 / 2)
+
+        # poluate xi
+        for xi_n in xi:
+            c_idx.append(y_symbolic.index(xi_n))
+            c_val.append(self.C)
+
+        return c_idx, c_val
+
+    def fit_binary(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        verbose=False,
+        k: int = 0,
+        kappa=3,
+        *kargs,
+        **kwargs,
+    ):
+        n, dim = X.shape
+        w = sp.symbols(f"w0:{dim}")
+        xi = sp.symbols(f"xi1:{n + 1}")
+        decision_vars = (*w, *xi)
+
+        # formulate problem
+        Sn_kappa1 = comb(
+            len(decision_vars) + kappa - 1, kappa - 1
+        )  # shape of localizing matrix
+        Sn_kappa = comb(len(decision_vars) + kappa, kappa)  # shape of moment matrix
+
+        # y \in S(n, 2kappa)
+        y_symbolic = monomials(decision_vars, range(2 * kappa + 1))
+
+        # create the standard monomials
+        basis = monomials(decision_vars, range(kappa + 1))
+        moment_matrix_svec = self._get_moment_matrix_svec(basis, y_symbolic)
+        localizing_matrix_svec_list = self._get_localizing_matrix_svec(
+            kappa, decision_vars, y_symbolic, X, y
+        )
+
+        constraint_mat_svec = np.vstack(
+            (moment_matrix_svec, np.vstack(localizing_matrix_svec_list))
+        )
+        f_entries, f_rows, f_cols = parse_sparse_linear_constraints(constraint_mat_svec)
+
+        # get obj
+        c_idx, c_val = self._get_cj(w, xi, y_symbolic)
+
+        num_vars = len(y_symbolic)
+        with mosek.Task() as task:
+            if verbose:
+                task.set_Stream(mosek.streamtype.log, stream_printer)
+
+            # add y
+            bkx = [mosek.boundkey.fx] + [mosek.boundkey.fr] * (num_vars - 1)
+            blx = [1.0] + [-_INF] * (num_vars - 1)
+            bux = [1.0] + [+_INF] * (num_vars - 1)
+            task.appendvars(num_vars)
+            task.putvarboundlist(range(num_vars), bkx, blx, bux)
+
+            # add svec cones
+            task.appendafes(len(constraint_mat_svec))
+            task.putafefentrylist(f_rows, f_cols, f_entries)
+            task.appendacc(
+                task.appendsvecpsdconedomain(Sn_kappa), range(Sn_kappa), None
+            )
+            for k in range(len(localizing_matrix_svec_list)):
+                task.appendacc(
+                    task.appendsvecpsdconedomain(Sn_kappa1),
+                    range(Sn_kappa + Sn_kappa1 * k, Sn_kappa + Sn_kappa1 * (k + 1)),
+                    None,
+                )
+
+            # add objective
+            task.putclist(c_idx, c_val)
+            task.putobjsense(mosek.objsense.minimize)
+
+            # run optimizer
+            task.optimize()
+
+            # check solution status
+            solsta = task.getsolsta(mosek.soltype.itr)
+            check_solution_status(solsta)
+
+            if verbose:
+                task.solutionsummary(mosek.streamtype.msg)
+
+            # TODO: retrieve solution
+            # TODO: debug and add documentations
+            # TODO: speed up problem parsing by doing more manual caching

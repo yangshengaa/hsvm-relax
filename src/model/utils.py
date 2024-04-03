@@ -4,10 +4,13 @@
 from typing import Tuple, List
 import sys
 import warnings
+from itertools import combinations_with_replacement
 
 import numpy as np
 from scipy.sparse import coo_array
 import mosek
+import sympy
+from sympy.core.symbol import Symbol
 
 
 # =============================================================
@@ -78,6 +81,7 @@ def minkowski_product(X: np.ndarray, w: np.ndarray) -> np.ndarray:
     result = -X @ G @ w
     return result
 
+
 def get_decision_boundary(w: np.ndarray) -> Tuple[np.ndarray, float]:
     """
     get the center and radius of the circle marking the decision boundary given by w (on Poincare space)
@@ -85,7 +89,7 @@ def get_decision_boundary(w: np.ndarray) -> Tuple[np.ndarray, float]:
     w0 = w[0]
     wr = w[1:]
     center = wr / w0
-    radius = np.sqrt((wr ** 2).sum() / w0 ** 2 - 1)
+    radius = np.sqrt((wr**2).sum() / w0**2 - 1)
     return center, radius
 
 
@@ -198,3 +202,39 @@ def platt_decision(decision_vals: np.ndarray, a: float, b: float) -> np.ndarray:
     fapb = decision_vals * a + b
     decisions = np.where(fapb >= 0, np.exp(-fapb), 1) / (1 + np.exp(-np.abs(fapb)))
     return decisions
+
+
+# ===============================================================
+# -------------------- SOSTools ---------------------------------
+# ===============================================================
+def monomials(vartable: List[Symbol], degree: List[int]) -> List[Symbol]:
+    """
+    adapted from https://github.com/zm2404/SOSPy
+
+    Construct a vector of monomials with prespecified degrees.
+    Z = monomials(VARTABLE, DEGREE)
+
+    Given a list of independent variables VARTABLE and a list of non-negative
+    integers DEGREE, this function constructs a column vector
+    containing all possible monomials of degree described in DEGREE.
+
+    For example, monomials([x1,x2],[1,2,3]) with x1 and x2
+    being symbolic variables will return exponent matrix of monomials in x1 and
+    x2 of degree 1, 2, and 3.
+    """
+    num_variables = len(vartable)
+
+    Z = []
+
+    for d in degree:
+        for comb in combinations_with_replacement(range(num_variables), d):
+            z = np.zeros(num_variables, dtype=int)
+            for idx in comb:
+                z[idx] += 1
+            Z.append(z)
+
+    res = []
+    for row in Z:
+        exprs = [var**deg for var, deg in zip(vartable, row)]
+        res.append(sympy.prod(exprs))
+    return res
