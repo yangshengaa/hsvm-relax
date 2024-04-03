@@ -7,9 +7,12 @@ Soft SVM
 """
 
 # load packages
+import warnings
 import numpy as np
 import mosek
 import scipy
+import sympy as sp
+from SumOfSquares import poly_opt_prob
 
 from .SVMBase import SVM
 from .utils import (
@@ -408,3 +411,44 @@ class HyperbolicSVMSoft(SVM):
         w = self._params[k]
         decision_vals = minkowski_product(X, w)
         return decision_vals
+
+class HyperbolicSVMSoftSOS(SVM):
+    def __init__(self, C: float = 1.0, *kargs, **kwargs):
+        super().__init__(*kargs, **kwargs)
+        self.C = C
+
+    def fit_binary(self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, max_kappa=10, *kargs, **kwargs):
+        # get problem size
+        n, dim = X.shape
+
+        # formulate problem
+        w = sp.symbols(f"w0:{dim}")
+        xi = sp.symbols(f"xi1:{n+1}")
+        decision_vars = (*w, *xi)
+
+        obj = ((-w[0] ** 2 + sum(w[i] ** 2 for i in range(1, dim))) / 2 +
+            self.C * sum(xi)
+        )
+        # add inequality constraints
+        inequalities = []
+        for i in range(n):
+            cur_inequality = y[i] * (X[i][0] * w[0] - sum(X[i][k] * w[k] for k in range(1, dim))) + np.sqrt(2) * xi[i] - 1
+            inequalities.append(cur_inequality)
+            inequalities.append(xi[i])
+        inequalities.append(-w[0] ** 2 + sum(w[k] ** 2 for k in range(1, dim)))
+        # no equality constraints
+        equalities = []
+        
+        # formulate problem 
+        for kappa in range(3, max_kappa):
+            prob = poly_opt_prob(decision_vars, obj, eqs=equalities, ineqs=inequalities, deg=kappa)
+            try:
+                # solve the problem
+                prob.solve(solver="mosek")
+
+                # solution found, exit loop
+                print(prob.value)
+                break
+            except:
+                warnings.warn(
+                    f"relaxation order kappa = {kappa} failed, increase by 1")
