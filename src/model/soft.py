@@ -3,7 +3,10 @@ Soft SVM
 - Euclidean SVM
 - Hyperbolic SVM (original problem)
 - Hyperbolic SVM (SDP relaxation)
-- Hyperbolic SVM (SOS relaxation)
+- Hyperbolic SVM Dual Formulation (SOS relaxation)
+- Hyperbolic SVM Primal Formulation (Moment Relaxation)
+
+Empirically Primal is faster than Dual
 """
 
 # load packages
@@ -23,8 +26,8 @@ from .utils import (
     check_solution_status,
     parse_sparse_linear_constraints,
     minkowski_product,
+    monomials,
 )
-from .sos_utils import monomials
 
 # for symbolic placeholders
 _INF = 0.0
@@ -417,7 +420,7 @@ class HyperbolicSVMSoft(SVM):
         return decision_vals
 
 
-class HyperbolicSVMSoftSOS(SVM):
+class HyperbolicSVMSoftSOSDual(SVM):
     def __init__(self, C: float = 1.0, *kargs, **kwargs):
         super().__init__(*kargs, **kwargs)
         self.C = C
@@ -473,7 +476,17 @@ class HyperbolicSVMSoftSOS(SVM):
                 warnings.warn(f"relaxation order kappa = {kappa} failed, increase by 1")
 
 
-class HyperbolicSVMSoftSOSDual(SVM):
+class HyperbolicSVMSoftSOSPrimal(SVM):
+    """
+    implement the primal moment relaxation
+
+    throughout this implementation, we use w to denote the decision boundary
+    and xi as the slack variable
+
+    note that MOSEK by default SVEC a matrix by column. The order is going through
+    one column before going to the next column
+    """
+
     def __init__(self, C: float = 1.0, *kargs, **kwargs):
         super().__init__(*kargs, **kwargs)
         self.C = C
@@ -483,8 +496,6 @@ class HyperbolicSVMSoftSOSDual(SVM):
     ) -> np.ndarray:
         """
         parse moment matrix constraint
-
-        TODO
         """
         monomial_idx_map = dict(zip(y_symbolic, range(len(y_symbolic))))
         num_rows = int(len(basis) * (len(basis) + 1) / 2)
@@ -492,8 +503,8 @@ class HyperbolicSVMSoftSOSDual(SVM):
 
         # populate moment matrix (svec)
         row_idx = 0
-        for i in range(len(basis)):
-            for j in range(i + 1):
+        for j in range(len(basis)):
+            for i in range(j, len(basis)):
                 cur_monomial = basis[i] * basis[j]
                 cur_idx = monomial_idx_map[cur_monomial]
                 moment_matrix_svec[row_idx][cur_idx] = 1 if (i == j) else np.sqrt(2)
@@ -508,9 +519,10 @@ class HyperbolicSVMSoftSOSDual(SVM):
         y_symbolic,
         X: np.ndarray,
         y: np.ndarray,
-    ) -> np.ndarray:
+    ) -> List[np.ndarray]:
         """
         parse localizing matrix constraint
+        :return list of localizing matrix constraint svec-ed
         """
         # prepare data
         N, dim = X.shape
@@ -526,8 +538,8 @@ class HyperbolicSVMSoftSOSDual(SVM):
 
         # cache basis_con outer products
         basis_monomial_idx_map = {}
-        for i in range(len(basis_con)):
-            for j in range(i + 1):
+        for j in range(len(basis_con)):
+            for i in range(j, len(basis_con)):
                 basis_monomial_idx_map[(i, j)] = basis_con[i] * basis_con[j]
 
         num_rows = int(len(basis_con) * (len(basis_con) + 1) / 2)
@@ -536,12 +548,12 @@ class HyperbolicSVMSoftSOSDual(SVM):
             # \xi_i >= 0
             cur_localizing_matrix_svec_xi = np.zeros((num_rows, len(y_symbolic)))
 
-            # y_i (x_i * w) + sqrt(2) - 1 >= 0
+            # y_i (x_i * w) + sqrt(2) xi_i - 1 >= 0
             cur_localizing_matrix_svec_cls = np.zeros((num_rows, len(y_symbolic)))
 
             row_idx = 0
-            for i in range(len(basis_con)):
-                for j in range(i + 1):
+            for j in range(len(basis_con)):
+                for i in range(j, len(basis_con)):
                     cached = basis_monomial_idx_map[(i, j)]
 
                     # xi
@@ -577,8 +589,8 @@ class HyperbolicSVMSoftSOSDual(SVM):
         # w^T G w >= 0
         cur_localizing_matrix_svec_valid = np.zeros((num_rows, len(y_symbolic)))
         row_idx = 0
-        for i in range(len(basis_con)):
-            for j in range(i + 1):
+        for j in range(len(basis_con)):
+            for i in range(j, len(basis_con)):
                 cached = basis_monomial_idx_map[(i, j)]
                 for d in range(dim):
                     wd = decision_vars[d]
@@ -598,9 +610,7 @@ class HyperbolicSVMSoftSOSDual(SVM):
         return localizing_matrix_svec_list
 
     def _get_cj(self, w: List[Symbol], xi: List[Symbol], y_symbolic: List[Symbol]):
-        """
-        get cj
-        """
+        """get objective value and position"""
         c_idx = []
         c_val = []
 
@@ -637,6 +647,10 @@ class HyperbolicSVMSoftSOSDual(SVM):
         )  # shape of localizing matrix
         Sn_kappa = comb(len(decision_vars) + kappa, kappa)  # shape of moment matrix
 
+        # compute length of moment and localizing matrices
+        moment_matrix_shape = Sn_kappa * (Sn_kappa + 1) // 2
+        localizing_matrix_shape = Sn_kappa1 * (Sn_kappa1 + 1) // 2
+
         # y \in S(n, 2kappa)
         y_symbolic = monomials(decision_vars, range(2 * kappa + 1))
 
@@ -671,12 +685,17 @@ class HyperbolicSVMSoftSOSDual(SVM):
             task.appendafes(len(constraint_mat_svec))
             task.putafefentrylist(f_rows, f_cols, f_entries)
             task.appendacc(
-                task.appendsvecpsdconedomain(Sn_kappa), range(Sn_kappa), None
+                task.appendsvecpsdconedomain(moment_matrix_shape),
+                range(moment_matrix_shape),
+                None,
             )
             for k in range(len(localizing_matrix_svec_list)):
                 task.appendacc(
-                    task.appendsvecpsdconedomain(Sn_kappa1),
-                    range(Sn_kappa + Sn_kappa1 * k, Sn_kappa + Sn_kappa1 * (k + 1)),
+                    task.appendsvecpsdconedomain(localizing_matrix_shape),
+                    range(
+                        moment_matrix_shape + localizing_matrix_shape * k,
+                        moment_matrix_shape + localizing_matrix_shape * (k + 1),
+                    ),
                     None,
                 )
 
@@ -695,5 +714,4 @@ class HyperbolicSVMSoftSOSDual(SVM):
                 task.solutionsummary(mosek.streamtype.msg)
 
             # TODO: retrieve solution
-            # TODO: debug and add documentations
             # TODO: speed up problem parsing by doing more manual caching
