@@ -14,6 +14,7 @@ import warnings
 from math import comb
 from typing import List
 import numpy as np
+from scipy.sparse import coo_array
 import mosek
 import scipy
 import sympy as sp
@@ -493,13 +494,15 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
 
     def _get_moment_matrix_svec(
         self, basis: List[Symbol], y_symbolic: List[Symbol]
-    ) -> np.ndarray:
+    ) -> List[List[float]]:
         """
         parse moment matrix constraint
         """
         monomial_idx_map = dict(zip(y_symbolic, range(len(y_symbolic))))
         num_rows = int(len(basis) * (len(basis) + 1) / 2)
-        moment_matrix_svec = np.zeros((num_rows, len(y_symbolic)))
+        # moment_matrix_svec = np.zeros((num_rows, len(y_symbolic)))
+
+        val_list, row_list, col_list = [], [], []
 
         # populate moment matrix (svec)
         row_idx = 0
@@ -507,10 +510,15 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
             for i in range(j, len(basis)):
                 cur_monomial = basis[i] * basis[j]
                 cur_idx = monomial_idx_map[cur_monomial]
-                moment_matrix_svec[row_idx][cur_idx] = 1 if (i == j) else np.sqrt(2)
+                # moment_matrix_svec[row_idx][cur_idx] = 1 if (i == j) else np.sqrt(2)
+
+                val_list.append(1 if (i == j) else np.sqrt(2))
+                row_list.append(row_idx)
+                col_list.append(cur_idx)
                 row_idx += 1
 
-        return moment_matrix_svec
+        # return moment_matrix_svec
+        return val_list, row_list, col_list
 
     def _get_localizing_matrix_svec(
         self,
@@ -535,6 +543,8 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
         # in this problem, all constraints have max degree 2
         # so the localizing matrix has basis kappa - 1
         basis_con = monomials(decision_vars, range(kappa))
+        Sn_kappa = comb(len(decision_vars) + kappa, kappa)
+        offset_idx = int(Sn_kappa * (1 + Sn_kappa) / 2)
 
         # cache basis_con outer products
         basis_monomial_idx_map = {}
@@ -543,71 +553,69 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
                 basis_monomial_idx_map[(i, j)] = basis_con[i] * basis_con[j]
 
         num_rows = int(len(basis_con) * (len(basis_con) + 1) / 2)
-        localizing_matrix_svec_list = []
+
+        val_list, row_list, col_list = [], [], []
+
         for n in range(N):
-            # \xi_i >= 0
-            cur_localizing_matrix_svec_xi = np.zeros((num_rows, len(y_symbolic)))
-
-            # y_i (x_i * w) + sqrt(2) xi_i - 1 >= 0
-            cur_localizing_matrix_svec_cls = np.zeros((num_rows, len(y_symbolic)))
-
             row_idx = 0
             for j in range(len(basis_con)):
                 for i in range(j, len(basis_con)):
                     cached = basis_monomial_idx_map[(i, j)]
+                    cur_row_idx = row_idx + offset_idx + num_rows * n * 2
 
                     # xi
                     xi_n = decision_vars[dim + n]
                     idx = monomial_idx_map[xi_n * cached]
-                    cur_localizing_matrix_svec_xi[row_idx, idx] = (
-                        1 if (i == j) else np.sqrt(2)
-                    )
+                    val_list.append(1 if (i == j) else np.sqrt(2))
+                    row_list.append(cur_row_idx)
+                    col_list.append(idx)
 
                     # cls
                     # xi
-                    cur_localizing_matrix_svec_cls[row_idx, idx] = (
-                        np.sqrt(2) if (i == j) else 2
-                    )
+                    val_list.append(np.sqrt(2) if (i == j) else 2)
+                    row_list.append(cur_row_idx + num_rows)
+                    col_list.append(idx)
+
                     # w0, w1, ...
                     for d in range(dim):
                         wd = decision_vars[d]
                         idx = monomial_idx_map[cached * wd]
                         val = B[n][d]
-                        cur_localizing_matrix_svec_cls[row_idx, idx] = (
-                            val if (i == j) else np.sqrt(2) * val
-                        )
+
+                        val_list.append(val if (i == j) else np.sqrt(2) * val)
+                        col_list.append(idx)
+                        row_list.append(cur_row_idx + num_rows)
+
                     # -1
-                    cur_localizing_matrix_svec_cls[
-                        row_idx, monomial_idx_map[cached]
-                    ] = (-1 if (i == j) else -np.sqrt(2))
+                    val_list.append(-1 if (i == j) else -np.sqrt(2))
+                    row_list.append(cur_row_idx + num_rows)
+                    col_list.append(monomial_idx_map[cached])
 
                     row_idx += 1
 
-            localizing_matrix_svec_list.append(cur_localizing_matrix_svec_xi)
-            localizing_matrix_svec_list.append(cur_localizing_matrix_svec_cls)
-
         # w^T G w >= 0
-        cur_localizing_matrix_svec_valid = np.zeros((num_rows, len(y_symbolic)))
         row_idx = 0
         for j in range(len(basis_con)):
             for i in range(j, len(basis_con)):
                 cached = basis_monomial_idx_map[(i, j)]
+                cur_row_idx = row_idx + offset_idx + 2 * N * num_rows
                 for d in range(dim):
                     wd = decision_vars[d]
                     cur_term = wd**2
                     idx = monomial_idx_map[cur_term * cached]
                     if d == 0:
-                        cur_localizing_matrix_svec_valid[row_idx, idx] = (
-                            -1 if (i == j) else -np.sqrt(2)
-                        )
+                        val_list.append(-1 if (i == j) else -np.sqrt(2))
+                        col_list.append(idx)
+                        row_list.append(cur_row_idx)
+
                     else:
-                        cur_localizing_matrix_svec_valid[row_idx, idx] = (
-                            1 if (i == j) else np.sqrt(2)
-                        )
+                        val_list.append(1 if (i == j) else np.sqrt(2))
+                        col_list.append(idx)
+                        row_list.append(cur_row_idx)
+
                 row_idx += 1
 
-        localizing_matrix_svec_list.append(cur_localizing_matrix_svec_valid)
-        return localizing_matrix_svec_list
+        return val_list, row_list, col_list
 
     def _get_cj(self, w: List[Symbol], xi: List[Symbol], y_symbolic: List[Symbol]):
         """get objective value and position"""
@@ -656,15 +664,20 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
 
         # create the standard monomials
         basis = monomials(decision_vars, range(kappa + 1))
-        moment_matrix_svec = self._get_moment_matrix_svec(basis, y_symbolic)
-        localizing_matrix_svec_list = self._get_localizing_matrix_svec(
+        moment_vals, moment_rows, moment_cols = self._get_moment_matrix_svec(
+            basis, y_symbolic
+        )
+        local_vals, local_rows, local_cols = self._get_localizing_matrix_svec(
             kappa, decision_vars, y_symbolic, X, y
         )
 
-        constraint_mat_svec = np.vstack(
-            (moment_matrix_svec, np.vstack(localizing_matrix_svec_list))
-        )
-        f_entries, f_rows, f_cols = parse_sparse_linear_constraints(constraint_mat_svec)
+        # constraint_mat_svec = np.vstack(
+        #     (moment_matrix_svec, np.vstack(localizing_matrix_svec_list))
+        # )
+        f_entries = moment_vals + local_vals
+        f_cols = moment_cols + local_cols
+        f_rows = moment_rows + local_rows
+        total_afe_expr = moment_matrix_shape + localizing_matrix_shape * (2 * n + 1)
 
         # get obj
         c_idx, c_val = self._get_cj(w, xi, y_symbolic)
@@ -682,14 +695,14 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
             task.putvarboundlist(range(num_vars), bkx, blx, bux)
 
             # add svec cones
-            task.appendafes(len(constraint_mat_svec))
+            task.appendafes(total_afe_expr)
             task.putafefentrylist(f_rows, f_cols, f_entries)
             task.appendacc(
                 task.appendsvecpsdconedomain(moment_matrix_shape),
                 range(moment_matrix_shape),
                 None,
             )
-            for k in range(len(localizing_matrix_svec_list)):
+            for k in range(2 * n + 1):
                 task.appendacc(
                     task.appendsvecpsdconedomain(localizing_matrix_shape),
                     range(
@@ -710,8 +723,16 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
             solsta = task.getsolsta(mosek.soltype.itr)
             check_solution_status(solsta)
 
+            # get y
+            y_sol = task.getxx(mosek.soltype.itr)
+
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
 
             # TODO: retrieve solution
-            # TODO: speed up problem parsing by doing more manual caching
+
+        def _get_optima(self, y_sol: List[float], y_symbolic: List[Symbol]):
+            """
+            parse solution using flat truncation theory
+            """
+            # populate moment matrix
