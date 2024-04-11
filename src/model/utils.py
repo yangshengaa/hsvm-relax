@@ -8,6 +8,7 @@ from itertools import combinations_with_replacement
 
 import numpy as np
 from scipy.sparse import coo_array
+from scipy.optimize import minimize
 import mosek
 import sympy
 from sympy.core.symbol import Symbol
@@ -272,3 +273,26 @@ def svec2smat_batch(matrix_svec: np.ndarray) -> np.ndarray:
 
     mat = np.stack(mat_list, axis=0)
     return mat
+
+
+# ===================================
+# -------- local refinement ---------
+# ===================================
+
+
+def local_refinement(
+    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float
+) -> np.ndarray:
+    """
+    perform local refinement of the solutions given by SDP/SOS using minimize
+    :param w0: the solutions given by relaxed methods
+    :param X: the data matrix
+    :param y: the data labels (binarized)
+    :param C: the slack penalization
+    :return the refined result
+    """
+
+    # TODO: @peihan
+    # use scipy minimize with constrained optimization to search for
+    # better ones
+    # use arcsinh for the loss function

@@ -777,78 +777,78 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
     #     solution = y_sol[1 : 1 + len(decision_vars)]
     #     return solution
 
-        # # from sprase to dense
-        # moment_mat_svec = coo_array(
-        #     (moment_vals, (moment_rows, moment_cols)), shape=(moment_length, len(y_sol))
-        # ).toarray()
+    # # from sprase to dense
+    # moment_mat_svec = coo_array(
+    #     (moment_vals, (moment_rows, moment_cols)), shape=(moment_length, len(y_sol))
+    # ).toarray()
 
-        # # get original matrix
-        # mat_batch = svec2smat_batch(moment_mat_svec)
-        # moment_matrix = (mat_batch * y_sol.reshape(-1, 1, 1)).sum(axis=0)
+    # # get original matrix
+    # mat_batch = svec2smat_batch(moment_mat_svec)
+    # moment_matrix = (mat_batch * y_sol.reshape(-1, 1, 1)).sum(axis=0)
 
-        # # # in this problem, we have d_c = d_0 = 1
-        # # idx = None
-        # # for k in range(kappa, 0, -1):
-        # #     num_large, num_small = comb(num_vars + k, k), comb(num_vars + k - 1, k - 1)
-        # #     rank_large = np.linalg.matrix_rank(
-        # #         moment_matrix[:num_large][:, :num_large], _EPS, hermitian=True
-        # #     )
-        # #     rank_small = np.linalg.matrix_rank(
-        # #         moment_matrix[:num_small][:, :num_small], _EPS, hermitian=True
-        # #     )
-        # #     if  rank_large == rank_small:
-        # #         idx = k
-        # #         break
+    # # # in this problem, we have d_c = d_0 = 1
+    # # idx = None
+    # # for k in range(kappa, 0, -1):
+    # #     num_large, num_small = comb(num_vars + k, k), comb(num_vars + k - 1, k - 1)
+    # #     rank_large = np.linalg.matrix_rank(
+    # #         moment_matrix[:num_large][:, :num_large], _EPS, hermitian=True
+    # #     )
+    # #     rank_small = np.linalg.matrix_rank(
+    # #         moment_matrix[:num_small][:, :num_small], _EPS, hermitian=True
+    # #     )
+    # #     if  rank_large == rank_small:
+    # #         idx = k
+    # #         break
 
-        # # get the slice from the solution
-        # num_vars = len(decision_vars)
+    # # get the slice from the solution
+    # num_vars = len(decision_vars)
 
-        # # * take critical component (less effective than directly taking the solution)
-        # # print(moment_matrix[:1+num_vars][:, :1+num_vars])
-        # # print(np.linalg.eigvalsh(moment_matrix[:1+num_vars][:, :1+num_vars]))
-        # # critical_component = moment_matrix[:1+num_vars][:, :1+num_vars]
-        # # print(critical_component)
+    # # * take critical component (less effective than directly taking the solution)
+    # # print(moment_matrix[:1+num_vars][:, :1+num_vars])
+    # # print(np.linalg.eigvalsh(moment_matrix[:1+num_vars][:, :1+num_vars]))
+    # # critical_component = moment_matrix[:1+num_vars][:, :1+num_vars]
+    # # print(critical_component)
 
-        # # # assert rank-1 of this matrix
-        # # critical_eigvals, critical_eigvecs = np.linalg.eigh(critical_component)
-        # # assert sum(critical_eigvals >= _EPS) == 1, f"rank of matrix exceed 1, with spctrum {critical_eigvals}"
-        # # # take top 1 component
-        # # solution = (critical_eigvecs[:, -1] * critical_eigvals[-1])[1:]
-        # solution = moment_matrix[0, 1:num_vars+1]
-        # return solution
+    # # # assert rank-1 of this matrix
+    # # critical_eigvals, critical_eigvecs = np.linalg.eigh(critical_component)
+    # # assert sum(critical_eigvals >= _EPS) == 1, f"rank of matrix exceed 1, with spctrum {critical_eigvals}"
+    # # # take top 1 component
+    # # solution = (critical_eigvecs[:, -1] * critical_eigvals[-1])[1:]
+    # solution = moment_matrix[0, 1:num_vars+1]
+    # return solution
 
-        # # * flat extension, which is not used, since this problem does not
-        # * satisfy flat extensionm it looks like
-        # eigvals, eigvecs = np.linalg.eigh(moment_matrix)
-        # temp = moment_matrix[1:6][:, 1:6]
-        # print(temp)
-        # print(np.linalg.eigvalsh(temp))
-        # V = eigvecs[:, -(num_vars + 1) :] * np.sqrt(
-        #     eigvals[-(num_vars + 1) :].reshape(1, -1)
-        # )  # by default ascending
-        # U, pivots = sp.Matrix(V.T).rref()
-        # assert set(pivots) == set(list(range(num_vars + 1)))
-        # U = np.array(U).astype(np.float64).T
-        # numerically suppress small values
-        # U[U < _EPS] = 0
+    # # * flat extension, which is not used, since this problem does not
+    # * satisfy flat extensionm it looks like
+    # eigvals, eigvecs = np.linalg.eigh(moment_matrix)
+    # temp = moment_matrix[1:6][:, 1:6]
+    # print(temp)
+    # print(np.linalg.eigvalsh(temp))
+    # V = eigvecs[:, -(num_vars + 1) :] * np.sqrt(
+    #     eigvals[-(num_vars + 1) :].reshape(1, -1)
+    # )  # by default ascending
+    # U, pivots = sp.Matrix(V.T).rref()
+    # assert set(pivots) == set(list(range(num_vars + 1)))
+    # U = np.array(U).astype(np.float64).T
+    # numerically suppress small values
+    # U[U < _EPS] = 0
 
-        # # find companion matrix
-        # basis_idx_map = dict(zip(basis, range(len(basis))))
-        # companion_matrices = []
-        # for i, var in enumerate(decision_vars):
-        #     idx_list = [i + 1]
-        #     for var2 in decision_vars:
-        #         idx_list.append(basis_idx_map[var * var2])
-        #     companion_matrices.append(U[idx_list])
+    # # find companion matrix
+    # basis_idx_map = dict(zip(basis, range(len(basis))))
+    # companion_matrices = []
+    # for i, var in enumerate(decision_vars):
+    #     idx_list = [i + 1]
+    #     for var2 in decision_vars:
+    #         idx_list.append(basis_idx_map[var * var2])
+    #     companion_matrices.append(U[idx_list])
 
-        # # robust method of solution extraction, using schur decomposition
-        # # we pick generic combinations with weights one
-        # M = sum(companion_matrices)
-        # T, U = schur(M, output="complex")
-        # print(T)
-        # for i, companion_matrix in enumerate(companion_matrices):
-        #     print(U.conj().T @ companion_matrix @ U)
-        #     pass
+    # # robust method of solution extraction, using schur decomposition
+    # # we pick generic combinations with weights one
+    # M = sum(companion_matrices)
+    # T, U = schur(M, output="complex")
+    # print(T)
+    # for i, companion_matrix in enumerate(companion_matrices):
+    #     print(U.conj().T @ companion_matrix @ U)
+    #     pass
 
 
 class HyperbolicSVMSoftSOSSparsePrimal(SVM):
@@ -1137,7 +1137,7 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
                 task.solutionsummary(mosek.streamtype.msg)
                 print(f"w: {w_}")
                 print(f"solution value: {solution_value:.4f}")
-    
+
     def decision_function(self, X: np.ndarray, k: int = 0):
         w = self._params[k]
         decision_vals = minkowski_product(X, w)
