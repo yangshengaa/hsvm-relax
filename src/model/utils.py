@@ -238,3 +238,37 @@ def monomials(vartable: List[Symbol], degree: List[int]) -> List[Symbol]:
         exprs = [var**deg for var, deg in zip(vartable, row)]
         res.append(sympy.prod(exprs))
     return res
+
+
+def svec2smat_batch(matrix_svec: np.ndarray) -> np.ndarray:
+    """
+    convert a svec moment matrix multiplier into the original moment matrix multiplier
+    :return a moment matrix multiplier with batch dimension as the last dimension
+    """
+    # check that length is of (n + 1) * n / 2 form
+    delta = np.sqrt(1 + 8 * matrix_svec.shape[0])
+    assert int(delta) == delta
+    d = (-1 + int(delta)) // 2
+
+    #
+    mat_list = []
+    for n in range(matrix_svec.shape[1]):
+        # extract column
+        arr = matrix_svec[:, n]
+
+        # put to upper triangular parts
+        cur_mat = np.zeros((d, d))
+        cur_mat[np.triu_indices(d)] = arr
+        cur_mat += cur_mat.T
+
+        # account for sqrt(2)
+        template = np.ones_like(cur_mat)
+        template -= np.eye(template.shape[0])
+        template /= np.sqrt(2)
+        template += np.eye(template.shape[0]) / 2
+        cur_mat = cur_mat * template
+
+        mat_list.append(cur_mat)
+
+    mat = np.stack(mat_list, axis=0)
+    return mat
