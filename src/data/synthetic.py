@@ -69,3 +69,14 @@ def stereo_l2p(x: np.ndarray) -> np.ndarray:
     """
     features = x[:, 1:] / (1 + x[:, [0]])
     return features
+
+
+def stereo_p2l(x: np.ndarray) -> np.ndarray:
+    """
+    stereographic projection from poincare to lorentz
+    """
+    x0 = (1 + (x**2).sum(axis=-1, keepdims=True)) / (
+        1 - (x**2).sum(axis=-1, keepdims=True)
+    )
+    features = np.hstack([x0, x * (1 + x0)])
+    return features

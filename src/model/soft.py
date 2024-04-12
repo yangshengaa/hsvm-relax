@@ -39,8 +39,9 @@ _EPS = 1e-6
 class EuclideanSVMSoft(SVM):
     """treat hyperbolic data as living in the ambient Euclidean space"""
 
-    def __init__(self, C: float = 1.0, *kargs, **kwargs):
+    def __init__(self, C: float = 1.0, fit_intercept=True, *kargs, **kwargs):
         super().__init__(*kargs, **kwargs)
+        self.fit_intercept = fit_intercept
         self.C = C
 
     def fit_binary(
@@ -53,10 +54,18 @@ class EuclideanSVMSoft(SVM):
         **kwargs,
     ):
         num_constraints, d = X.shape
-        num_vars = d + 1 + num_constraints  # introduce \xi
+        if self.fit_intercept:
+            num_vars = d + 1 + num_constraints  # introduce \xi
 
-        # get constraints, pack y(wx + b) + \xi >= 1
-        A = np.hstack([X * y.reshape(-1, 1), y.reshape(-1, 1), np.eye(num_constraints)])
+            # get constraints, pack y(wx + b) + \xi >= 1
+            A = np.hstack(
+                [X * y.reshape(-1, 1), y.reshape(-1, 1), np.eye(num_constraints)]
+            )
+        else:
+            num_vars = d + num_constraints
+
+            # get constraints, pack y (wx) + \xi >= 1
+            A = np.hstack([X * y.reshape(-1, 1), np.eye(num_constraints)])
         A_entries, A_rows, A_cols = parse_sparse_linear_constraints(A)
 
         # formulate problem
@@ -68,8 +77,14 @@ class EuclideanSVMSoft(SVM):
             bkc = [mosek.boundkey.lo] * num_constraints
             blc = [1.0] * num_constraints
             buc = [+_INF] * num_constraints
-            bkx = [mosek.boundkey.fr] * (d + 1) + [mosek.boundkey.lo] * num_constraints
-            blx = [-_INF] * (d + 1) + [0.0] * num_constraints
+            if self.fit_intercept:
+                bkx = [mosek.boundkey.fr] * (d + 1) + [
+                    mosek.boundkey.lo
+                ] * num_constraints
+                blx = [-_INF] * (d + 1) + [0.0] * num_constraints
+            else:
+                bkx = [mosek.boundkey.fr] * (d) + [mosek.boundkey.lo] * num_constraints
+                blx = [-_INF] * (d) + [0.0] * num_constraints
             bux = [+_INF] * num_vars
             task.appendcons(num_constraints)
             task.appendvars(num_vars)
@@ -82,7 +97,8 @@ class EuclideanSVMSoft(SVM):
             # specify obj
             task.putqobj(range(d), range(d), [1.0] * d)  # diagonal 1s
             task.putclist(
-                range(d + 2, num_vars), [self.C] * num_constraints
+                range(d + (2 if self.fit_intercept else 1), num_vars),
+                [self.C] * num_constraints,
             )  # plus \xi
             task.putobjsense(mosek.objsense.minimize)
 
@@ -94,22 +110,31 @@ class EuclideanSVMSoft(SVM):
             check_solution_status(solsta)
 
             # record solution
-            xx = task.getxxslice(mosek.soltype.itr, 0, d + 1)
-            w = np.array(xx[:-1])
-            b = xx[-1]
+            if self.fit_intercept:
+                xx = task.getxxslice(mosek.soltype.itr, 0, d + 1)
+                w = np.array(xx[:-1])
+                b = xx[-1]
 
-            # append to self dict
-            self._params[k] = (w, b)
+                self._params[k] = (w, b)
+            else:
+                w = np.array(task.getxxslice(mosek.soltype.itr, 0, d))
+
+                self._params[k] = (w,)
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
                 print("w: \n", self._params[k][0])
-                print("b: \n", self._params[k][1])
+                if self.fit_intercept:
+                    print("b: \n", self._params[k][1])
 
     def decision_function(self, X: np.ndarray, k: int = 0):
-        w, b = self._params[k]
-        decision_vals = X @ w + b
+        if self.fit_intercept:
+            w, b = self._params[k]
+            decision_vals = X @ w + b
+        else:
+            w = self._params[k][0]
+            decision_vals = X @ w
         return decision_vals
 
 
@@ -363,7 +388,9 @@ class HyperbolicSVMSoft(SVM):
     ) -> np.ndarray:
         """initialize guess of the decision function"""
         if self.warm_start:
-            model = EuclideanSVMSoft()  # use hard-margin for init
+            model = EuclideanSVMSoft(
+                C=self.C, fit_intercept=False
+            )  # use hard-margin for init
             if verbose:
                 print("warm start init, solver log below:")
             model.fit(X, y, verbose=verbose)
