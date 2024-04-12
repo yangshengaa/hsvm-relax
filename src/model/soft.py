@@ -187,6 +187,8 @@ class HyperbolicSVMSoftSDP(SVM):
             solsta = task.getsolsta(mosek.soltype.itr)
             check_solution_status(solsta)
 
+            primal_obj = task.getprimalobj(mosek.soltype.itr)
+
             # get optimal solution (only the lower triangular flattened is returned)
             bar_x = task.getbarxj(mosek.soltype.itr, 0)
             Z_bar_lower = np.array(bar_x)
@@ -206,6 +208,9 @@ class HyperbolicSVMSoftSDP(SVM):
             ).sum() * self.C
             self._params[k] = [W_, z_, w_]
 
+            # get optimality gap
+            eta = (solution_value - primal_obj) / (1 + solution_value + primal_obj)
+
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
@@ -213,6 +218,7 @@ class HyperbolicSVMSoftSDP(SVM):
                 print("z: \n", self._params[k][1])
                 print("w: \n", self._params[k][2])
                 print(f"Optimal Value: {solution_value:.4f}")
+                print(f"Optimality gap: {eta:.4f}")
 
     def decision_function(self, X: np.ndarray, k: int = 0):
         w = self._params[k][-1]
@@ -728,6 +734,8 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
             solsta = task.getsolsta(mosek.soltype.itr)
             check_solution_status(solsta)
 
+            primal_obj = task.getprimalobj(mosek.soltype.itr)
+
             # get y and store solution
             # y_sol = np.array(task.getxx(mosek.soltype.itr))
             # w_and_xi = self._get_optima(
@@ -747,10 +755,14 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
                 np.arcsinh(1) - np.arcsinh(B @ w_), a_min=0.0, a_max=None
             ).sum() * self.C
 
+            # get optimality gap
+            eta = (solution_value - primal_obj) / (1 + primal_obj + solution_value)
+
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print(f"w: {w_}")
                 print(f"solution value: {solution_value:.4f}")
+                print(f"optimality gap: {eta:.4f}")
 
     # def _get_optima(
     #     self,
@@ -1126,6 +1138,8 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
             solsta = task.getsolsta(mosek.soltype.itr)
             check_solution_status(solsta)
 
+            primal_obj = task.getprimalobj(mosek.soltype.itr)
+
             # * get y and store solution (naive)
             w_ = np.array(task.getxxslice(mosek.soltype.itr, 1, 1 + dim))
             self._params[k] = w_
@@ -1133,10 +1147,14 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
                 np.arcsinh(1) - np.arcsinh(B @ w_), a_min=0.0, a_max=None
             ).sum() * self.C
 
+            # compute optimality gap
+            eta = (solution_value - primal_obj) / (1 + primal_obj + solution_value)
+
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print(f"w: {w_}")
                 print(f"solution value: {solution_value:.4f}")
+                print(f"optimality gap: {eta:.4f}")
 
     def decision_function(self, X: np.ndarray, k: int = 0):
         w = self._params[k]
