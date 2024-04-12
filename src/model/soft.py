@@ -297,7 +297,7 @@ class HyperbolicSVMSoft(SVM):
         lr: float = 1.0,
         seed: int = 1,
         batch_size: int = 128,
-        epochs: int = 100,
+        epochs: int = 2000,
         warm_start: bool = True,
         *kargs,
         **kwargs,
@@ -335,7 +335,7 @@ class HyperbolicSVMSoft(SVM):
         for _ in range(self.epochs):
             current_loss = 0
             # full batch GD
-            grad_w = self._grad_fn(w_new, X, y)
+            grad_w = self._grad_fn(w_new, X, y, self.C)
             w_new = w_new - self.lr * grad_w
             # if not in feasible region, need to use projection
             if not self._is_feasible(w_new):
