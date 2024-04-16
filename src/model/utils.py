@@ -279,9 +279,12 @@ def svec2smat_batch(matrix_svec: np.ndarray) -> np.ndarray:
 # -------- local refinement ---------
 # ===================================
 
+def fun(w, X, y, C):
+    return -1/2 * minkowski_product(w.reshape(1,-1),w) + C * np.sum(np.clip(np.arcsinh(1)- np.arcsinh(y*minkowski_product(X,w)), 0, np.inf))
+
 
 def local_refinement(
-    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float
+    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float, method
 ) -> np.ndarray:
     """
     perform local refinement of the solutions given by SDP/SOS using minimize
@@ -292,7 +295,12 @@ def local_refinement(
     :return the refined result
     """
 
-    # TODO: @peihan
-    # use scipy minimize with constrained optimization to search for
-    # better ones
-    # use arcsinh for the loss function
+    # Overflow issues need to be fixed!
+
+    cons = ({'type': 'ineq', 'fun': lambda w:  -minkowski_product(w.reshape(1,-1),w)})
+    res = minimize(fun = fun, x0 = w0, args = (X, y, C), method=method, constraints=cons)
+    obj = res.fun
+    new_w = res.x
+    return new_w
+
+
