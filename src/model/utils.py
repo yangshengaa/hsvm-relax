@@ -289,8 +289,12 @@ def objective_soft(
     :param C: the slack penalty
     :return the loss
     """
-    return -1 / 2 * minkowski_product(w.reshape(1, -1), w) + C * np.sum(
-        np.clip(np.arcsinh(1) - np.arcsinh(y * minkowski_product(X, w)), 0, np.inf)
+    return (
+        -1 / 2 * minkowski_product(w.reshape(1, -1), w).item()
+        + C
+        * np.sum(
+            np.clip(np.arcsinh(1) - np.arcsinh(y * minkowski_product(X, w)), 0, np.inf)
+        ).item()
     )
 
 

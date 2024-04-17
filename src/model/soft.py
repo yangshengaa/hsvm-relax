@@ -29,6 +29,8 @@ from .utils import (
     minkowski_product,
     monomials,
     svec2smat_batch,
+    objective_soft,
+    local_refinement,
 )
 
 # for symbolic placeholders
@@ -141,9 +143,13 @@ class EuclideanSVMSoft(SVM):
 class HyperbolicSVMSoftSDP(SVM):
     """Hyperbolic Soft-SVM, taken relaxation up to the first order"""
 
-    def __init__(self, C: float = 1.0, *kargs, **kwargs):
+    def __init__(
+        self, C: float = 1.0, refine=True, refine_method="COBYLA", *kargs, **kwargs
+    ):
         super().__init__(*kargs, **kwargs)
         self.C = C
+        self.refine = refine
+        self.refine_method = refine_method
 
     def fit_binary(
         self,
@@ -228,9 +234,12 @@ class HyperbolicSVMSoftSDP(SVM):
 
             # get w using heuristic methods
             w_ = self._get_optima(W_, z_, X, y)
-            solution_value = (-w_[0] ** 2 + sum(w_[1:] ** 2)) / 2 + np.clip(
-                np.arcsinh(1) - np.arcsinh(B @ w_), a_min=0.0, a_max=None
-            ).sum() * self.C
+
+            # * local refinement
+            if self.refine:
+                w_ = local_refinement(w_, X, y, self.C, method=self.refine_method)
+
+            solution_value = objective_soft(w_, X, y, self.C)
             self._params[k] = [W_, z_, w_]
 
             # get optimality gap
@@ -891,9 +900,23 @@ class HyperbolicSVMSoftSOSPrimal(SVM):
 
 
 class HyperbolicSVMSoftSOSSparsePrimal(SVM):
-    def __init__(self, C: float = 1.0, *kargs, **kwargs):
+    def __init__(
+        self,
+        C: float = 1.0,
+        refine: bool = True,
+        refine_method: str = "COBYLA",
+        *kargs,
+        **kwargs,
+    ):
+        """
+        :param C: the penalty strength
+        :param refine: True to use local refinement after the solution obtained, otherwise just read off solutions
+        :param refine_method: the method for scipy minimize to use
+        """
         super().__init__(*kargs, **kwargs)
         self.C = C
+        self.refine = refine
+        self.refine_method = refine_method
 
     def _get_sparse_binding(
         self, g0_y: List[Symbol], gi_y: List[Symbol], N: int
@@ -1169,10 +1192,13 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
 
             # * get y and store solution (naive)
             w_ = np.array(task.getxxslice(mosek.soltype.itr, 1, 1 + dim))
+
+            # * local refinement
+            if self.refine:
+                w_ = local_refinement(w_, X, y, self.C, method=self.refine_method)
+
             self._params[k] = w_
-            solution_value = (-w_[0] ** 2 + sum(w_[1:] ** 2)) / 2 + np.clip(
-                np.arcsinh(1) - np.arcsinh(B @ w_), a_min=0.0, a_max=None
-            ).sum() * self.C
+            solution_value = objective_soft(w_, X, y, self.C)
 
             # compute optimality gap
             eta = (solution_value - primal_obj) / (1 + primal_obj + solution_value)
