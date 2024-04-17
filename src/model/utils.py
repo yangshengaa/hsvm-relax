@@ -278,13 +278,24 @@ def svec2smat_batch(matrix_svec: np.ndarray) -> np.ndarray:
 # ===================================
 # -------- local refinement ---------
 # ===================================
-
-def fun(w, X, y, C):
-    return -1/2 * minkowski_product(w.reshape(1,-1),w) + C * np.sum(np.clip(np.arcsinh(1)- np.arcsinh(y*minkowski_product(X,w)), 0, np.inf))
+def objective_soft(
+    w: np.ndarray, X: np.ndarray, y: np.ndarray, C: float = 1.0
+) -> float:
+    """
+    the objective for soft-margin HSVM
+    :param w: the decision boundary
+    :param X: the data matrix
+    :param y: the data labels (binarized)
+    :param C: the slack penalty
+    :return the loss
+    """
+    return -1 / 2 * minkowski_product(w.reshape(1, -1), w) + C * np.sum(
+        np.clip(np.arcsinh(1) - np.arcsinh(y * minkowski_product(X, w)), 0, np.inf)
+    )
 
 
 def local_refinement(
-    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float, method = "COBYLA"
+    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float, method="COBYLA"
 ) -> np.ndarray:
     """
     perform local refinement of the solutions given by SDP/SOS using minimize
@@ -292,15 +303,19 @@ def local_refinement(
     :param X: the data matrix
     :param y: the data labels (binarized)
     :param C: the slack penalization
+    :param method: the refinement method
     :return the refined result
     """
-
     # method could be COBYLA, SLSQP, and trust-constr
+    assert method in [
+        "COBYLA",
+        "SLSQP",
+        "trust-constr",
+    ], f'method {method} not available for constrained opt, select ["COBYLA", "SLSQP", "trust-constr"]'
 
-    cons = ({'type': 'ineq', 'fun': lambda w:  -minkowski_product(w.reshape(1,-1),w)})
-    res = minimize(fun = fun, x0 = w0, args = (X, y, C), method=method, constraints=cons)
-    obj = res.fun
+    cons = {"type": "ineq", "fun": lambda w: -minkowski_product(w.reshape(1, -1), w)}
+    res = minimize(
+        fun=objective_soft, x0=w0, args=(X, y, C), method=method, constraints=cons
+    )
     new_w = res.x
     return new_w
-
-
