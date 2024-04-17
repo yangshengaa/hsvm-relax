@@ -284,7 +284,7 @@ def fun(w, X, y, C):
 
 
 def local_refinement(
-    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float, method
+    w0: np.ndarray, X: np.ndarray, y: np.ndarray, C: float, method = "COBYLA"
 ) -> np.ndarray:
     """
     perform local refinement of the solutions given by SDP/SOS using minimize
@@ -295,7 +295,7 @@ def local_refinement(
     :return the refined result
     """
 
-    # Overflow issues need to be fixed!
+    # method could be COBYLA, SLSQP, and trust-constr
 
     cons = ({'type': 'ineq', 'fun': lambda w:  -minkowski_product(w.reshape(1,-1),w)})
     res = minimize(fun = fun, x0 = w0, args = (X, y, C), method=method, constraints=cons)
