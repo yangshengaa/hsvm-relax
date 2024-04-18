@@ -160,3 +160,7 @@ cython_debug/
 #.idea/
 
 notebook/
+
+# store model
+model/*
+result/*
