@@ -123,6 +123,9 @@ class EuclideanSVMSoft(SVM):
 
                 self._params[k] = (w,)
 
+            # add obj
+            self._obj[k] = task.getprimalobj(mosek.soltype.itr)
+
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
                 print("Optimal Solution: ")
@@ -139,6 +142,9 @@ class EuclideanSVMSoft(SVM):
             decision_vals = X @ w
         return decision_vals
 
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        return self._params[k]
+
 
 class HyperbolicSVMSoftSDP(SVM):
     """Hyperbolic Soft-SVM, taken relaxation up to the first order"""
@@ -150,6 +156,9 @@ class HyperbolicSVMSoftSDP(SVM):
         self.C = C
         self.refine = refine
         self.refine_method = refine_method
+
+        # store optimality gap
+        self._gaps = {}
 
     def fit_binary(
         self,
@@ -241,9 +250,11 @@ class HyperbolicSVMSoftSDP(SVM):
 
             solution_value = objective_soft(w_, X, y, self.C)
             self._params[k] = [W_, z_, w_]
+            self._obj[k] = solution_value
 
             # get optimality gap
             eta = (solution_value - primal_obj) / (1 + solution_value + primal_obj)
+            self._gaps[k] = eta
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
@@ -323,6 +334,9 @@ class HyperbolicSVMSoftSDP(SVM):
         w = candidates[np.argmin(costs)]
         return w
 
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        return self._params[k][-1]
+
 
 class HyperbolicSVMSoft(SVM):
     def __init__(
@@ -386,6 +400,7 @@ class HyperbolicSVMSoft(SVM):
 
         self._params[k] = best_w
         solution_value = self._loss_fn(best_w, X, y, self.C)
+        self._obj[k] = solution_value
 
         if verbose:
             print("Optimal Solution: ")
@@ -463,6 +478,9 @@ class HyperbolicSVMSoft(SVM):
         w = self._params[k]
         decision_vals = minkowski_product(X, w)
         return decision_vals
+
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        return self._params[k]
 
 
 class HyperbolicSVMSoftSOSDual(SVM):
@@ -918,6 +936,9 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
         self.refine = refine
         self.refine_method = refine_method
 
+        # store optimality gaps
+        self._gaps = {}
+
     def _get_sparse_binding(
         self, g0_y: List[Symbol], gi_y: List[Symbol], N: int
     ) -> Tuple[List[float], List[int], List[int]]:
@@ -1199,9 +1220,11 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
 
             self._params[k] = w_
             solution_value = objective_soft(w_, X, y, self.C)
+            self._obj[k] = solution_value
 
             # compute optimality gap
             eta = (solution_value - primal_obj) / (1 + primal_obj + solution_value)
+            self._gaps[k] = eta
 
             if verbose:
                 task.solutionsummary(mosek.streamtype.msg)
@@ -1213,3 +1236,6 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
         w = self._params[k]
         decision_vals = minkowski_product(X, w)
         return decision_vals
+
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        return self._params[k]

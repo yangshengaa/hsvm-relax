@@ -5,16 +5,20 @@ for multi-class classification, we use OVR (one vs rest) strategy
 """
 
 # load packages
+import os
+from typing import Dict
+import pickle
 import numpy as np
 
 # load platt
-from .utils import platt_decision, get_platt_scaling_coef
+from .utils import platt_decision, get_platt_scaling_coef, objective_soft
 
 
 class SVM:
     def __init__(self, *kargs, **kwargs):
         self._is_binary = None  # indicator for binary classification
         self._params = {}  # organize parameters in a dictionary
+        self._obj = {}  # store objective values
 
     def fit(self, X: np.ndarray, y: np.ndarray, verbose=False, *kargs, **kwargs):
         """
@@ -91,6 +95,38 @@ class SVM:
         decisions = np.argmax(decision_probabilities, axis=1)
         return decisions
 
+    def save(self, path: str, tag: str):
+        """save a trained model"""
+        # only need to save `_params`
+        with open(os.path.join(path, f"model_params_{tag}.pkl"), "wb") as f:
+            pickle.dump(self._params, f)
+
+    def load(self, path: str, tag: str):
+        """load a trained model"""
+        with open(os.path.join(path, f"model_params_{tag}.pkl"), "rb") as f:
+            self._params = pickle.load(f)
+
+    def get_train_loss(self) -> Dict[int, float]:
+        """get the train loss by class"""
+        return self._obj
+
+    def get_test_loss(self, X: np.ndarray, y: np.ndarray, C: float) -> Dict[int, float]:
+        """get the test loss by class"""
+        test_loss = {}
+
+        # binary
+        if len(self._params) == 1:
+            y_binarized = (2 * y) - 1  # convert to -1 and 1
+            # test_loss[0] = objective_soft()
+            w = self.get_predictor(0)
+            test_loss[0] = objective_soft(w, X, y_binarized, C)
+        else:
+            for k in range(len(self._params)):
+                y_binarized = (y == k) * 2 - 1
+                w = self.get_predictor(k)
+                test_loss[k] = objective_soft(w, X, y_binarized, C)
+        return test_loss
+
     # -----------------------------------------------
     # ========== custom implementations =============
     # -----------------------------------------------
@@ -109,4 +145,8 @@ class SVM:
         the raw decision values after fitting (same behavior as in sklearn)
         :param k: the class index
         """
+        raise NotImplementedError()
+
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        """get the predictor"""
         raise NotImplementedError()
