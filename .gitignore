@@ -164,3 +164,6 @@ notebook/
 # store model
 model/*
 result/*
+
+# output files
+out/*
