@@ -8,6 +8,7 @@ for multi-class classification, we use OVR (one vs rest) strategy
 import os
 from typing import Dict
 import pickle
+from itertools import combinations
 import numpy as np
 
 # load platt
@@ -15,14 +16,18 @@ from .utils import platt_decision, get_platt_scaling_coef, objective_soft
 
 
 class SVM:
-    def __init__(self, *kargs, **kwargs):
+    def __init__(self, multi_class="ovr", *kargs, **kwargs):
+        """
+        :param multi_class: "ovr" for one-vs-rest, "ovo" for one-vs-one
+        """
         self._is_binary = None  # indicator for binary classification
         self._params = {}  # organize parameters in a dictionary
         self._obj = {}  # store objective values
+        self.multi_class = multi_class
 
     def fit(self, X: np.ndarray, y: np.ndarray, verbose=False, *kargs, **kwargs):
         """
-        train the model
+        train the model (one-vs-rest)
         :param X: input data
         :param y: input label (0, 1, 2, ..., K)
         :param verbose: True to print training/optimization steps
@@ -36,7 +41,6 @@ class SVM:
             y_binarized = (2 * y) - 1  # convert to -1 and 1
             self.fit_binary(X, y_binarized, verbose=verbose, *kargs, **kwargs)
 
-        # multiclass (OVR)
         else:
             self._is_binary = False
             self._num_classes = len(unique_labels)
@@ -45,22 +49,60 @@ class SVM:
             self.platt_coefs_by_class = {}
 
             # for each class, fit a model
-            for k in range(self._num_classes):
-                y_binarized = (y == k) * 2 - 1
-                self.fit_binary(X, y_binarized, verbose=verbose, k=k, *kargs, **kwargs)
+            if self.multi_class == "ovr":
+                for k in range(self._num_classes):
+                    y_binarized = (y == k) * 2 - 1
+                    self.fit_binary(
+                        X, y_binarized, verbose=verbose, k=k, *kargs, **kwargs
+                    )
 
-                # platt training
-                decision_vals = self.decision_function(X, k=k)
-                a, b = get_platt_scaling_coef(
-                    decision_vals,
-                    y_binarized,
-                    prior0=None,
-                    prior1=None,
-                    max_iteration=100,
+                    # platt training
+                    decision_vals = self.decision_function(X, k=k)
+                    a, b = get_platt_scaling_coef(
+                        decision_vals,
+                        y_binarized,
+                        prior0=None,
+                        prior1=None,
+                        max_iteration=100,
+                    )
+
+                    # append to dict
+                    self.platt_coefs_by_class[k] = (a, b)
+
+            # for each pair of class, fit a model (ovo)
+            elif self.multi_class == "ovo":
+                for k1, k2 in combinations(range(self._num_classes), 2):
+                    # select samples of these classes
+                    selector = (y == k1) | (y == k2)
+                    X_selected = X[selector]
+                    y_selected = y[selector]
+                    y_binarized = (y_selected == k1) * 2 - 1
+                    self.fit_binary(
+                        X_selected,
+                        y_binarized,
+                        verbose=verbose,
+                        k=(k1, k2),
+                        *kargs,
+                        **kwargs,
+                    )
+
+                    # platt scaling
+                    decision_vals = self.decision_function(X_selected, k=(k1, k2))
+                    a, b = get_platt_scaling_coef(
+                        decision_vals,
+                        y_binarized,
+                        prior0=None,
+                        prior1=None,
+                        max_iteration=100,
+                    )
+
+                    # append to dict
+                    self.platt_coefs_by_class[(k1, k2)] = (a, b)
+
+            else:
+                raise NotImplementedError(
+                    f"multi_class {self.multi_class} not supported"
                 )
-
-                # append to dict
-                self.platt_coefs_by_class[k] = (a, b)
 
     def predict(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
         """
@@ -72,15 +114,18 @@ class SVM:
         if self._is_binary:
             return self._predict_binary(X, *kargs, **kwargs)
         else:
-            return self._predict_multi(X, *kargs, **kwargs)
+            if self.multi_class == "ovr":
+                return self._predict_multi_ovr(X, *kargs, **kwargs)
+            elif self.multi_class == "ovo":
+                return self._predict_multi_ovo(X, *kargs, **kwargs)
 
     def _predict_binary(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
         decision_vals = self.decision_function(X)
         decisions = (decision_vals >= 0).astype(int)
         return decisions
 
-    def _predict_multi(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
-        """make prediction based on platt-scaling"""
+    def _predict_multi_ovr(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
+        """make prediction based on platt-scaling (One-vs-Rest)"""
         # for each class, get probability of belonging to this class
         decision_probabilities = []
         for k in range(self._num_classes):
@@ -93,6 +138,23 @@ class SVM:
 
         # use argmax as the final decision
         decisions = np.argmax(decision_probabilities, axis=1)
+        return decisions
+
+    def _predict_multi_ovo(self, X: np.ndarray, *kargs, **kwargs) -> np.ndarray:
+        """make prediction based on platt-scaling (One-vs-One)"""
+        # for each class pairs, get the decision using majority vote
+        num_votes = np.zeros((X.shape[0], self._num_classes), dtype=int)
+        for k1, k2 in combinations(range(self._num_classes), 2):
+            a, b = self.platt_coefs_by_class[(k1, k2)]
+            decision_vals = self.decision_function(X, (k1, k2))
+            cur_prob = platt_decision(decision_vals, a, b)
+
+            # convert probabilities to index to increment
+            col_idx = np.where(cur_prob > 1 / 2, k1, k2)
+            row_idx = np.arange(X.shape[0])
+            num_votes[(row_idx, col_idx)] += 1
+        # use argmax as the final decision
+        decisions = np.argmax(num_votes, axis=1)
         return decisions
 
     def save(self, path: str, tag: str):
