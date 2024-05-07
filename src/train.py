@@ -33,6 +33,7 @@ parser.add_argument('--kappa', default=2, type=int, help='the relaxation order')
 parser.add_argument("--refine", default=False, action='store_true', help='turn on to enable local refinement')
 parser.add_argument("--refine-method", default="COBYLA", type=str, help='the method for local refinement')
 parser.add_argument('--verbose', default=False, action='store_true', help='print mosek logging')
+parser.add_argument("--multi-class", default='ovr', type=str, help='the multiclass training scheme', choices=['ovr', 'ovo'])
 
 # technical
 parser.add_argument('--tag', default='exp', type=str, help='the tag for loading data')
@@ -65,17 +66,17 @@ def load_model():
     """get model"""
     if args.model.lower() == 'gd':
         from models import HyperbolicSVMSoft
-        model = HyperbolicSVMSoft(args.C, args.lr, seed=args.seed)
+        model = HyperbolicSVMSoft(args.C, args.lr, multi_class=args.multi_class,seed=args.seed)
     elif args.model.lower() == 'sdp':
         from models import HyperbolicSVMSoftSDP
-        model = HyperbolicSVMSoftSDP(args.C, refine=args.refine, refine_method=args.refine_method)
+        model = HyperbolicSVMSoftSDP(args.C, multi_class=args.multi_class, refine=args.refine, refine_method=args.refine_method)
     elif args.model.lower() == "moment":
         from models import HyperbolicSVMSoftSOSSparsePrimal
-        model = HyperbolicSVMSoftSOSSparsePrimal(args.C, refine=args.refine, refine_method=args.refine_method)
+        model = HyperbolicSVMSoftSOSSparsePrimal(args.C, multi_class=args.multi_class, refine=args.refine, refine_method=args.refine_method)
     elif args.model.lower () == 'euclidean':
         # treats hyperbolic features as living in the ambient space
         from models import EuclideanSVMSoft
-        model = EuclideanSVMSoft(args.C, fit_intercept=False)
+        model = EuclideanSVMSoft(args.C, multi_class=args.multi_class, fit_intercept=False)
     else:
         raise NotImplementedError(f"model {args.model} not implemented")
     return model
