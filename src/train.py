@@ -115,8 +115,7 @@ def train(X, y):
 
         # get optimality gap 
         if args.model.lower() == 'sdp' or args.model.lower() == 'moment':
-            gaps = model._gaps
-            fold_info['optimality_gap'] = gaps
+            fold_info['optimality_gap'] = model.get_optimality_gap()
 
         info[f"fold_{i + 1}"] = fold_info
 

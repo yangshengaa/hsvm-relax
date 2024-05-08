@@ -170,7 +170,14 @@ class SVM:
 
     def get_train_loss(self) -> Dict[int, float]:
         """get the train loss by class"""
-        return self._obj
+        # change key to string for dumpping
+        if self.multi_class == "ovo":
+            temp = {}
+            for key, val in self._obj.items():
+                temp[str(key)] = val
+            return temp
+        else:
+            return self._obj
 
     def get_test_loss(self, X: np.ndarray, y: np.ndarray, C: float) -> Dict[int, float]:
         """get the test loss by class"""
@@ -183,11 +190,34 @@ class SVM:
             w = self.get_predictor(0)
             test_loss[0] = objective_soft(w, X, y_binarized, C)
         else:
-            for k in range(len(self._params)):
-                y_binarized = (y == k) * 2 - 1
-                w = self.get_predictor(k)
-                test_loss[k] = objective_soft(w, X, y_binarized, C)
+            if self.multi_class == "ovr":
+                for k in range(len(self._params)):
+                    y_binarized = (y == k) * 2 - 1
+                    w = self.get_predictor(k)
+                    test_loss[k] = objective_soft(w, X, y_binarized, C)
+            elif self.multi_class == "ovo":
+                for k1, k2 in combinations(list(range(self._num_classes)), 2):
+                    # sample data of these two classes
+                    selector = (y == k1) | (y == k2)
+                    X_selected = X[selector]
+                    y_selected = y[selector]
+                    y_binarized = (y_selected == k1) * 2 - 1
+                    w = self.get_predictor((k1, k2))
+                    test_loss[f"({k1}, {k2})"] = objective_soft(
+                        w, X_selected, y_binarized, C
+                    )
+
         return test_loss
+
+    def get_optimality_gap(self) -> Dict[int, float]:
+        """get optimality gap"""
+        if self.multi_class == "ovo":
+            temp = {}
+            for key, val in self._gaps.items():
+                temp[str(key)] = val
+            return temp
+        else:
+            return self._gaps
 
     # -----------------------------------------------
     # ========== custom implementations =============
