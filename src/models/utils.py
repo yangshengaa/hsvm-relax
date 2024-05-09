@@ -94,6 +94,40 @@ def get_decision_boundary(w: np.ndarray) -> Tuple[np.ndarray, float]:
     return center, radius
 
 
+def logmap0_lorentz(X: np.ndarray) -> np.ndarray:
+    """the log map at origin of Lorentz manifold"""
+    x0 = X[:, [0]]
+    xr = X[:, 1:]
+    x_norm = np.arccosh(x0)
+    v = xr * x_norm / np.sinh(x_norm)
+    return v
+
+
+def get_jacobian_batch(X: np.ndarray) -> np.ndarray:
+    """
+    for robust counterpart, get jacobian with respect to input X
+    :return [num_samples, d, d - 1]
+    """
+    n, d = X.shape
+    xr = X[:, 1:]
+    V = logmap0_lorentz(X)
+
+    # assemble jacobian for each input
+    jacobian_batch = []
+    for i in range(n):
+        cur_x = xr[[i]]
+        cur_v = V[[i]]
+        v_norm = np.linalg.norm(cur_v)
+        bottom = (
+            np.cosh(v_norm) / v_norm - np.sinh(v_norm) / v_norm**3
+        ) * cur_v.T @ cur_v + np.sinh(v_norm) / v_norm * np.eye(d - 1)
+        cur_jacobian = np.vstack([cur_x, bottom])
+        jacobian_batch.append(cur_jacobian)
+
+    jacobian_batch = np.array(jacobian_batch)
+    return jacobian_batch
+
+
 # ================================================================
 # ------------ platt scaling related -----------------------------
 # ================================================================

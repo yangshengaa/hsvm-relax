@@ -7,6 +7,10 @@ Soft SVM
 - Hyperbolic SVM Primal Formulation (Moment Relaxation)
 - Hyperbolic SVM Sparse Primal (exploit star-shape RIP condition, the go-to method)
 
+Robust Versions
+- SDP with l1-uncertainty
+- SDP with l-inf uncertainty 
+
 Empirically Primal is faster than Dual
 """
 
@@ -31,6 +35,7 @@ from .utils import (
     svec2smat_batch,
     objective_soft,
     local_refinement,
+    get_jacobian_batch,
 )
 
 # for symbolic placeholders
@@ -1239,3 +1244,474 @@ class HyperbolicSVMSoftSOSSparsePrimal(SVM):
 
     def get_predictor(self, k: int = 0) -> np.ndarray:
         return self._params[k]
+
+
+class HyperbolicSVMSoftSDPRobustInf(SVM):
+    def __init__(
+        self,
+        C: float = 1.0,
+        refine: bool = True,
+        refine_method: str = "COBYLA",
+        multi_class="ovr",
+        rho=0.2,
+        *kargs,
+        **kwargs,
+    ):
+        super().__init__(multi_class, *kargs, **kwargs)
+        self.C = C
+        self.refine = refine
+        self.refine_method = refine_method
+        self.rho = rho  # uncertain parameter
+
+    def fit_binary(
+        self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, *kargs, **kwargs
+    ):
+        # prepare
+        n, d = X.shape
+        Z_dim = d + 1  # implement Z = [W, z; z^T, 1]
+
+        # prepare linear constraints
+        G = np.eye(d)
+        G[0, 0] = -1.0
+
+        # only specify lower triangular part, divide by 2
+        B = (X @ -G) * y.reshape(-1, 1)
+        A_flatten = (B.flatten() / 2).tolist()
+
+        # get robust portion (can drop y due to taking norm)
+        jacobian_batch = get_jacobian_batch(X)
+        robust_multiplier = (G @ jacobian_batch / 2).transpose([0, 2, 1])
+        robust_flatten = (
+            robust_multiplier.flatten().tolist()
+            + (-robust_multiplier).flatten().tolist()
+        )
+        num_robust_vars = n * (d - 1)
+
+        # formulate problem
+        with mosek.Task() as task:
+            if verbose:
+                task.set_Stream(mosek.streamtype.log, stream_printer)
+
+            # formulate constraints (margin constraint + w feasible + bottom right = 1)
+            bkc = [mosek.boundkey.lo] * (n + 1) + [mosek.boundkey.fx]
+            blc = [1.0] * n + [0.0, 1.0]
+            buc = [+_INF] * (n + 1) + [1.0]
+
+            # appended with robust constraints
+            # for l1 norm, each variable has 2 constraints
+            bkc += [mosek.boundkey.lo] * num_robust_vars * 2
+            blc += [0.0] * num_robust_vars * 2
+            buc += [+_INF] * num_robust_vars * 2
+
+            # xis + robust parameters
+            bkx = [mosek.boundkey.lo] * (n + num_robust_vars)
+            blx = [0.0] * (n + num_robust_vars)
+            bux = [+_INF] * (n + num_robust_vars)
+
+            task.appendcons(len(bkc))
+            task.putconboundlist(range(len(bkc)), bkc, blc, buc)
+            task.appendvars(n + num_robust_vars)
+
+            # append SDP variable
+            task.appendbarvars([Z_dim])
+            task.putvarboundlist(range(len(bkx)), bkx, blx, bux)
+
+            # add constraints to the system
+            idxc = (
+                np.hstack([np.ones((d,), dtype=int) * k for k in range(n)]).tolist()
+                + [n] * d
+                + [n + 1]
+            )
+            sdp_var_idx = [0] * len(idxc)  # all on the same SDP variable
+            idx_k_list = [d] * (d * n) + list(range(d)) + [d]
+            idx_l_list = list(range(d)) * n + list(range(d)) + [d]
+            val_ijkl = A_flatten + [-1.0] + [1.0] * (d - 1) + [1.0]
+
+            # * test adding redundant constraint
+            # add robust constranints
+            idxc += np.hstack(
+                [np.ones((d,), dtype=int) * k for k in range(n + 2, len(bkc))]
+            ).tolist()
+            sdp_var_idx = [0] * len(idxc)  # replace
+            idx_k_list += [d] * (len(idxc) - len(idx_k_list))
+            idx_l_list += list(range(d)) * (num_robust_vars * 2)
+            val_ijkl += robust_flatten
+            task.putbarablocktriplet(
+                idxc, sdp_var_idx, idx_k_list, idx_l_list, val_ijkl
+            )
+            task.putaijlist(range(n), range(n), [2 ** (1 / 2)] * n)  # slack terms
+
+            # add robust constraints (linearized)
+            task.putaijlist(
+                list(range(n)) * (d - 1),
+                np.hstack(
+                    [
+                        list(range(n + k, n + num_robust_vars, d - 1))
+                        for k in range(d - 1)
+                    ]
+                ).tolist(),
+                [-self.rho] * num_robust_vars,
+            )
+            task.putaijlist(
+                range(n + 2, len(bkc)),
+                list(range(n, n + num_robust_vars)) * 2,
+                [1.0] * num_robust_vars * 2,
+            )
+
+            # add objective
+            task.putbarcblocktriplet(
+                [0] * d, range(d), range(d), [-1 / 2] + [1 / 2] * (d - 1)
+            )
+            # add slack term penalization
+            task.putclist(range(n), [self.C] * n)
+            task.putobjsense(mosek.objsense.minimize)
+
+            # run optimizer
+            task.optimize()
+
+            # check solution status
+            solsta = task.getsolsta(mosek.soltype.itr)
+            check_solution_status(solsta)
+
+            # primal_obj = task.getprimalobj(mosek.soltype.itr)
+
+            # get optimal solution (only the lower triangular flattened is returned)
+            bar_x = task.getbarxj(mosek.soltype.itr, 0)
+            Z_bar_lower = np.array(bar_x)
+            Z_bar = np.zeros((Z_dim, Z_dim))
+            Z_bar[np.triu_indices(Z_dim)] = Z_bar_lower
+            Z_bar += Z_bar.T
+            Z_bar -= np.diag(np.diag(Z_bar)) / 2
+
+            # record solution
+            W_ = Z_bar[:, :-1][:-1, :]
+            z_ = Z_bar[-1, :-1]
+
+            # get w using heuristic methods
+            w_ = self._get_optima(W_, z_, X, y)
+
+            # * local refinement
+            if self.refine:
+                w_ = local_refinement(w_, X, y, self.C, method=self.refine_method)
+
+            solution_value = objective_soft(w_, X, y, self.C)
+            self._params[k] = [W_, z_, w_]
+            self._obj[k] = solution_value
+
+            # # get optimality gap
+            # eta = (solution_value - primal_obj) / (1 + solution_value + primal_obj)
+            # self._gaps[k] = eta
+
+            if verbose:
+                task.solutionsummary(mosek.streamtype.msg)
+                print("Optimal Solution: ")
+                print("W: \n", self._params[k][0])
+                print("z: \n", self._params[k][1])
+                print("w: \n", self._params[k][2])
+                print(f"Optimal Value: {solution_value:.4f}")
+                # print(f"Optimality gap: {eta:.4f}")
+
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w = self._params[k][-1]
+        decision_vals = minkowski_product(X, w)
+        return decision_vals
+
+    def _get_optima(
+        self,
+        W: np.ndarray,
+        z: np.ndarray,
+        X: np.ndarray,
+        y: np.ndarray,
+        num_random: int = 10,
+    ) -> np.ndarray:
+        """
+        heuristic methods to extract the optimal w from (W, z) solved
+        we search for the following candidates
+        - z
+        - rank 1 component of W
+        - columns divided by z (from MIT Robust Optimization)
+        - Gaussian Randomization (from Stanford Lecture)
+
+        in soft margin we take the solution that has the lowest overall cost only
+        here we take the arcsinh original formulation
+
+        :param W, z: obtained by solver
+        :param X, y: given data
+        :param num_random
+        :return w: the optima classification boundary
+        """
+        # z
+        candidates = [z]
+
+        # rank 1 component
+        eigvals, eigvecs = np.linalg.eigh(W)
+        w_r1 = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+        candidates.append(w_r1)
+
+        # column divisions
+        candidates.append((W / z).T)
+
+        # gaussian randomization N(z, W - zz^T)
+        random_solutions = (
+            np.random.normal(0, 1, size=(num_random, len(z)))
+            @ np.linalg.cholesky(W - np.outer(z, z)).T
+            + z
+        )
+        candidates.append(random_solutions)
+
+        candidates = np.vstack(candidates)
+
+        # vectorized slackness computations
+        d = X.shape[1]
+        G = np.eye(d)
+        G[0, 0] = -1.0
+        B = (X @ -G) * y.reshape(-1, 1)
+        # filter feasible candidates
+        feasible = (candidates * (candidates @ G)).sum(axis=-1) >= 0
+        candidates = candidates[feasible]
+        slackness = np.clip(
+            np.arcsinh(1) - np.arcsinh(B @ candidates.T), a_min=0.0, a_max=None
+        )
+        costs = (candidates * (candidates @ G)).sum() / 2 + self.C * slackness.sum(
+            axis=0
+        )
+
+        # get candidate with the min cost
+        w = candidates[np.argmin(costs)]
+        return w
+
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        return self._params[k][-1]
+
+
+class HyperbolicSVMSoftSDPRobust1(SVM):
+    def __init__(
+        self,
+        C: float = 1.0,
+        refine: bool = True,
+        refine_method: str = "COBYLA",
+        multi_class="ovr",
+        rho=0.2,
+        *kargs,
+        **kwargs,
+    ):
+        super().__init__(multi_class, *kargs, **kwargs)
+        self.C = C
+        self.refine = refine
+        self.refine_method = refine_method
+        self.rho = rho  # uncertain parameter
+
+    def fit_binary(
+        self, X: np.ndarray, y: np.ndarray, verbose=False, k: int = 0, *kargs, **kwargs
+    ):
+        # prepare
+        n, d = X.shape
+        Z_dim = d + 1  # implement Z = [W, z; z^T, 1]
+
+        # prepare linear constraints
+        G = np.eye(d)
+        G[0, 0] = -1.0
+
+        # only specify lower triangular part, divide by 2
+        B = (X @ -G) * y.reshape(-1, 1)
+        A_flatten = (B.flatten() / 2).tolist()
+
+        # get robust portion (can drop y due to taking norm)
+        jacobian_batch = get_jacobian_batch(X)
+        robust_multiplier = (G @ jacobian_batch / 2).transpose([0, 2, 1])
+        robust_flatten = (
+            robust_multiplier.flatten().tolist()
+            + (-robust_multiplier).flatten().tolist()
+        )
+        num_robust_vars = n
+
+        # formulate problem
+        with mosek.Task() as task:
+            if verbose:
+                task.set_Stream(mosek.streamtype.log, stream_printer)
+
+            # formulate constraints (margin constraint + w feasible + bottom right = 1)
+            bkc = [mosek.boundkey.lo] * (n + 1) + [mosek.boundkey.fx]
+            blc = [1.0] * n + [0.0, 1.0]
+            buc = [+_INF] * (n + 1) + [1.0]
+
+            # appended with robust constraints
+            # for l-inf norm, each variable has 2 constraints
+            bkc += [mosek.boundkey.lo] * num_robust_vars * 2
+            blc += [0.0] * num_robust_vars * 2
+            buc += [+_INF] * num_robust_vars * 2
+
+            # xis + robust parameters
+            bkx = [mosek.boundkey.lo] * (n + num_robust_vars)
+            blx = [0.0] * (n + num_robust_vars)
+            bux = [+_INF] * (n + num_robust_vars)
+
+            task.appendcons(len(bkc))
+            task.putconboundlist(range(len(bkc)), bkc, blc, buc)
+            task.appendvars(n + num_robust_vars)
+
+            # append SDP variable
+            task.appendbarvars([Z_dim])
+            task.putvarboundlist(range(len(bkx)), bkx, blx, bux)
+
+            # add constraints to the system
+            idxc = (
+                np.hstack([np.ones((d,), dtype=int) * k for k in range(n)]).tolist()
+                + [n] * d
+                + [n + 1]
+            )
+            sdp_var_idx = [0] * len(idxc)  # all on the same SDP variable
+            idx_k_list = [d] * (d * n) + list(range(d)) + [d]
+            idx_l_list = list(range(d)) * n + list(range(d)) + [d]
+            val_ijkl = A_flatten + [-1.0] + [1.0] * (d - 1) + [1.0]
+
+            # * test adding redundant constraint
+            # add robust constranints
+            idxc += np.hstack(
+                [np.ones((d,), dtype=int) * k for k in range(n + 2, len(bkc))]
+            ).tolist()
+            sdp_var_idx = [0] * len(idxc)  # replace
+            idx_k_list += [d] * (len(idxc) - len(idx_k_list))
+            idx_l_list += list(range(d)) * (num_robust_vars * 2)
+            val_ijkl += robust_flatten
+            task.putbarablocktriplet(
+                idxc, sdp_var_idx, idx_k_list, idx_l_list, val_ijkl
+            )
+            task.putaijlist(range(n), range(n), [2 ** (1 / 2)] * n)  # slack terms
+
+            # add robust constraints (linearized)
+            task.putaijlist(
+                range(n),
+                range(n, n + num_robust_vars),
+                [-self.rho] * num_robust_vars,
+            )
+            task.putaijlist(
+                range(n + 2, len(bkc)),
+                list(range(n, n + num_robust_vars)) * 2,
+                [1.0] * num_robust_vars * 2,
+            )
+
+            # add objective
+            task.putbarcblocktriplet(
+                [0] * d, range(d), range(d), [-1 / 2] + [1 / 2] * (d - 1)
+            )
+            # add slack term penalization
+            task.putclist(range(n), [self.C] * n)
+            task.putobjsense(mosek.objsense.minimize)
+
+            # run optimizer
+            task.optimize()
+
+            # check solution status
+            solsta = task.getsolsta(mosek.soltype.itr)
+            check_solution_status(solsta)
+
+            # primal_obj = task.getprimalobj(mosek.soltype.itr)
+
+            # get optimal solution (only the lower triangular flattened is returned)
+            bar_x = task.getbarxj(mosek.soltype.itr, 0)
+            Z_bar_lower = np.array(bar_x)
+            Z_bar = np.zeros((Z_dim, Z_dim))
+            Z_bar[np.triu_indices(Z_dim)] = Z_bar_lower
+            Z_bar += Z_bar.T
+            Z_bar -= np.diag(np.diag(Z_bar)) / 2
+
+            # record solution
+            W_ = Z_bar[:, :-1][:-1, :]
+            z_ = Z_bar[-1, :-1]
+
+            # get w using heuristic methods
+            w_ = self._get_optima(W_, z_, X, y)
+
+            # * local refinement
+            if self.refine:
+                w_ = local_refinement(w_, X, y, self.C, method=self.refine_method)
+
+            solution_value = objective_soft(w_, X, y, self.C)
+            self._params[k] = [W_, z_, w_]
+            self._obj[k] = solution_value
+
+            # # get optimality gap
+            # eta = (solution_value - primal_obj) / (1 + solution_value + primal_obj)
+            # self._gaps[k] = eta
+
+            if verbose:
+                task.solutionsummary(mosek.streamtype.msg)
+                print("Optimal Solution: ")
+                print("W: \n", self._params[k][0])
+                print("z: \n", self._params[k][1])
+                print("w: \n", self._params[k][2])
+                print(f"Optimal Value: {solution_value:.4f}")
+                # print(f"Optimality gap: {eta:.4f}")
+
+    def decision_function(self, X: np.ndarray, k: int = 0):
+        w = self._params[k][-1]
+        decision_vals = minkowski_product(X, w)
+        return decision_vals
+
+    def _get_optima(
+        self,
+        W: np.ndarray,
+        z: np.ndarray,
+        X: np.ndarray,
+        y: np.ndarray,
+        num_random: int = 10,
+    ) -> np.ndarray:
+        """
+        heuristic methods to extract the optimal w from (W, z) solved
+        we search for the following candidates
+        - z
+        - rank 1 component of W
+        - columns divided by z (from MIT Robust Optimization)
+        - Gaussian Randomization (from Stanford Lecture)
+
+        in soft margin we take the solution that has the lowest overall cost only
+        here we take the arcsinh original formulation
+
+        :param W, z: obtained by solver
+        :param X, y: given data
+        :param num_random
+        :return w: the optima classification boundary
+        """
+        # z
+        candidates = [z]
+
+        # rank 1 component
+        eigvals, eigvecs = np.linalg.eigh(W)
+        w_r1 = eigvecs[:, -1] * eigvals[-1] ** (1 / 2)
+        candidates.append(w_r1)
+
+        # column divisions
+        candidates.append((W / z).T)
+
+        # gaussian randomization N(z, W - zz^T)
+        random_solutions = (
+            np.random.normal(0, 1, size=(num_random, len(z)))
+            @ np.linalg.cholesky(W - np.outer(z, z)).T
+            + z
+        )
+        candidates.append(random_solutions)
+
+        candidates = np.vstack(candidates)
+
+        # vectorized slackness computations
+        d = X.shape[1]
+        G = np.eye(d)
+        G[0, 0] = -1.0
+        B = (X @ -G) * y.reshape(-1, 1)
+        # filter feasible candidates
+        feasible = (candidates * (candidates @ G)).sum(axis=-1) >= 0
+        candidates = candidates[feasible]
+        slackness = np.clip(
+            np.arcsinh(1) - np.arcsinh(B @ candidates.T), a_min=0.0, a_max=None
+        )
+        costs = (candidates * (candidates @ G)).sum() / 2 + self.C * slackness.sum(
+            axis=0
+        )
+
+        # get candidate with the min cost
+        w = candidates[np.argmin(costs)]
+        return w
+
+    def get_predictor(self, k: int = 0) -> np.ndarray:
+        return self._params[k][-1]
