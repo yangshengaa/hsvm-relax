@@ -1327,7 +1327,6 @@ class HyperbolicSVMSoftSDPRobustInf(SVM):
             idx_l_list = list(range(d)) * n + list(range(d)) + [d]
             val_ijkl = A_flatten + [-1.0] + [1.0] * (d - 1) + [1.0]
 
-            # * test adding redundant constraint
             # add robust constranints
             idxc += np.hstack(
                 [np.ones((d,), dtype=int) * k for k in range(n + 2, len(bkc))]
@@ -1537,9 +1536,9 @@ class HyperbolicSVMSoftSDPRobust1(SVM):
 
             # appended with robust constraints
             # for l-inf norm, each variable has 2 constraints
-            bkc += [mosek.boundkey.lo] * num_robust_vars * 2
-            blc += [0.0] * num_robust_vars * 2
-            buc += [+_INF] * num_robust_vars * 2
+            bkc += [mosek.boundkey.lo] * n * (d - 1) * 2
+            blc += [0.0] * n * (d - 1) * 2
+            buc += [+_INF] * n * (d - 1) * 2
 
             # xis + robust parameters
             bkx = [mosek.boundkey.lo] * (n + num_robust_vars)
@@ -1565,14 +1564,13 @@ class HyperbolicSVMSoftSDPRobust1(SVM):
             idx_l_list = list(range(d)) * n + list(range(d)) + [d]
             val_ijkl = A_flatten + [-1.0] + [1.0] * (d - 1) + [1.0]
 
-            # * test adding redundant constraint
             # add robust constranints
             idxc += np.hstack(
                 [np.ones((d,), dtype=int) * k for k in range(n + 2, len(bkc))]
             ).tolist()
             sdp_var_idx = [0] * len(idxc)  # replace
             idx_k_list += [d] * (len(idxc) - len(idx_k_list))
-            idx_l_list += list(range(d)) * (num_robust_vars * 2)
+            idx_l_list += list(range(d)) * (n * (d - 1) * 2)
             val_ijkl += robust_flatten
             task.putbarablocktriplet(
                 idxc, sdp_var_idx, idx_k_list, idx_l_list, val_ijkl
@@ -1587,8 +1585,14 @@ class HyperbolicSVMSoftSDPRobust1(SVM):
             )
             task.putaijlist(
                 range(n + 2, len(bkc)),
-                list(range(n, n + num_robust_vars)) * 2,
-                [1.0] * num_robust_vars * 2,
+                np.hstack(
+                    [
+                        np.ones((d - 1,), dtype=int) * k
+                        for k in range(n, n + num_robust_vars)
+                    ]
+                ).tolist()
+                * 2,
+                [1.0] * n * (d - 1) * 2,
             )
 
             # add objective
