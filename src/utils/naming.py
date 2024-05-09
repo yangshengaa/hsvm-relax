@@ -16,6 +16,10 @@ def name_exp(args):
     # add model tags
     name += f"_m{args.model}_C{args.C}"
 
+    # add robust parameters
+    if args.model in ["sdp_1", "sdp_inf"]:
+        name += f"_rho{args.rho}"
+
     if args.model.lower() == "moment":
         name += f"_kappa{args.kappa}"
     elif args.model.lower() == "gd":
