@@ -350,7 +350,7 @@ class HyperbolicSVMSoft(SVM):
         lr: float = 1.0,
         seed: int = 1,
         batch_size: int = 128,
-        epochs: int = 2000,
+        epochs: int = 4000,
         warm_start: bool = True,
         *kargs,
         **kwargs,
