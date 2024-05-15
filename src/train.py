@@ -9,7 +9,8 @@ import json
 from typing import Tuple
 import argparse
 import numpy as np
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import f1_score
 
 # load files
 from utils import load_config, name_exp
@@ -91,10 +92,10 @@ def load_model():
 def train(X, y):
     """train loop, log K-fold validation acc and loss"""
     # set up KFold validation
-    kf = KFold(n_splits=args.folds, shuffle=True, random_state=args.seed)
+    kf = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=args.seed)
     info = {}
     start_time = time()
-    for i, (train_index, test_index) in enumerate(kf.split(X)):
+    for i, (train_index, test_index) in enumerate(kf.split(X, y)):
         fold_info = {}
         train_X, train_y = X[train_index], y[train_index]
         test_X, test_y = X[test_index], y[test_index]
@@ -105,12 +106,18 @@ def train(X, y):
         # kappa argument only used for SOS 
         model.fit(train_X, train_y, verbose=args.verbose, kappa=args.kappa)
 
-        # get train test acc 
-        train_acc = (model.predict(train_X) == train_y).mean()
-        test_acc = (model.predict(test_X) == test_y).mean()
+        # get train test acc and f1 score
+        train_pred = model.predict(train_X)
+        test_pred = model.predict(test_X)
+        train_acc = (train_pred == train_y).mean()
+        test_acc = (test_pred == test_y).mean()
+        train_f1 = f1_score(train_y, train_pred)
+        test_f1 = f1_score(test_y, test_pred)
 
         fold_info["train_acc"] = train_acc 
         fold_info['test_acc'] = test_acc
+        fold_info["train_f1"] = train_f1 
+        fold_info["test_f1"] = test_f1
 
         # get loss 
         if args.model.lower() != 'euclidean':
