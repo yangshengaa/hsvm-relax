@@ -7,8 +7,8 @@
 #SBATCH -p seas_compute
 #SBATCH --mem=120GB
 #SBATCH --array=0-2%3
-#SBATCH -o out/sim_%A_%a.out
-#SBATCH -e out/sim_%A_%a.err
+#SBATCH -o out/tree/sim_%A_%a.out
+#SBATCH -e out/tree/sim_%A_%a.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=shengyang@fas.harvard.edu
 
