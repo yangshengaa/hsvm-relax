@@ -111,8 +111,8 @@ def train(X, y):
         test_pred = model.predict(test_X)
         train_acc = (train_pred == train_y).mean()
         test_acc = (test_pred == test_y).mean()
-        train_f1 = f1_score(train_y, train_pred)
-        test_f1 = f1_score(test_y, test_pred)
+        train_f1 = f1_score(train_y, train_pred, average="weighted")
+        test_f1 = f1_score(test_y, test_pred, average="weighted")
 
         fold_info["train_acc"] = train_acc 
         fold_info['test_acc'] = test_acc
