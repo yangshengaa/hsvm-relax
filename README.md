@@ -1,6 +1,6 @@
 # Hyperbolic SVM Relaxation
 
-Harvard ENG-SCI 257 SDP and Moment Relaxation of Hyperbolic SVM
+SDP and Moment Relaxation of Hyperbolic SVM
 
 ## Environment
 
@@ -15,3 +15,5 @@ pip install matplotlib torch toml mosek cvxpy SumOfSquares
 ```
 
 for `mosek`, one can get an academic license for free from [https://www.mosek.com/products/academic-licenses/](https://www.mosek.com/products/academic-licenses/)
+
+To run experiments, simply follow the bash scripts in [commands/](commands/). One may directly run the bash scripts or adapt accordingly.
