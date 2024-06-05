@@ -101,7 +101,6 @@ class HyperbolicSVMHard(SVM):
         self,
         lr: float = 1.0,
         seed: int = 1,
-        batch_size: int = 128,
         epochs: int = 100,
         warm_start: bool = True,
         *kargs,
@@ -114,7 +113,6 @@ class HyperbolicSVMHard(SVM):
 
         # training parameters
         self.lr = lr
-        self.batch_size = batch_size
         self.epochs = epochs
         self.seed = seed
         self.warm_start = warm_start
@@ -130,7 +128,6 @@ class HyperbolicSVMHard(SVM):
             w = self._projection(w, X, y)
 
         # train
-        # TODO: add minibatch
         w_new = w
         best_w = w
         init_loss = self._loss_fn(w, X, y)

@@ -349,7 +349,6 @@ class HyperbolicSVMSoft(SVM):
         C: float = 1.0,
         lr: float = 1.0,
         seed: int = 1,
-        batch_size: int = 128,
         epochs: int = 4000,
         warm_start: bool = True,
         *kargs,
@@ -362,7 +361,6 @@ class HyperbolicSVMSoft(SVM):
 
         # training parameters
         self.lr = lr
-        self.batch_size = batch_size
         self.epochs = epochs
         self.seed = seed
         self.warm_start = warm_start
@@ -380,7 +378,6 @@ class HyperbolicSVMSoft(SVM):
             w = self._projection(w, alpha=0.01)
 
         # train
-        # TODO: add minibatch
         w_new = w
         best_w = w
         init_loss = self._loss_fn(w, X, y, self.C)
