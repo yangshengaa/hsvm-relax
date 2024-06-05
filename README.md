@@ -46,3 +46,14 @@ python src/train.py --data krumsiek --model moment --C 10. --verbose --dump
 ```
 
 where `--verbose` indicates printing the interior point progress summary and `--dump` indicates saving the trained model parameters. See [src/train.py](src/train.py) for a full lists of parameters.
+
+## Acknowledgement
+
+If you find this code useful, please consider citing our preprint:
+
+    @article{yang2024convex,
+      title={Convex Relaxation for Solving Large-Margin Classifiers in Hyperbolic Space},
+      author={Yang, Sheng and Liu, Peihan and Pehlevan, Cengiz},
+      journal={arXiv preprint arXiv:2405.17198},
+      year={2024}
+    }
