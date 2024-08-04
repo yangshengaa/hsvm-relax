@@ -357,3 +357,30 @@ def local_refinement(
     )
     new_w = res.x
     return new_w
+
+# ==================================================
+# ----------- sampling initial guess ---------------
+# ==================================================
+
+def rejection_uniform_sample(dim: int, seed: int, max_sample_num: int = 5000) -> np.ndarray:
+    """
+    uniformly sample a decision vector on the unit sphere that 
+    satisfies w^T G w > 0
+    :param dim: the dimension of the vector to sample from (i.e. dim = d + 1)
+    :param seed: random seed for numpy 
+    """
+    np.random.seed(seed)
+    sample_idx = 0
+    while sample_idx < max_sample_num:
+        # uniformly sample from a sphere
+        w_random = np.random.randn(dim)
+        w_random = w_random / np.linalg.norm(w_random)
+
+        condition = sum([w_random[i] * w_random[i] * ((i == 0) * -2 + 1) for i in range(dim)]) > 0
+        if condition:
+            return w_random
+        sample_idx += 1
+    
+    # if sampling too hard, use a dumb guess
+    w_random = np.array([0] * (dim - 1) + [1])
+    return w_random

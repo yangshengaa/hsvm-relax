@@ -17,3 +17,8 @@ result_dir='result/real/'
 data_dir='data/'
 model_dir='model/gaussian/'
 result_dir='result/gaussian/'
+
+["rebuttal"]
+data_dir='data/'
+model_dir='model/rebuttal/'
+result_dir='result/rebuttal/'

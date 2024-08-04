@@ -36,6 +36,7 @@ from .utils import (
     objective_soft,
     local_refinement,
     get_jacobian_batch,
+    rejection_uniform_sample
 )
 
 # for symbolic placeholders
@@ -422,9 +423,12 @@ class HyperbolicSVMSoft(SVM):
             model.fit(X, y, verbose=verbose)
             initial_w = model._params[0][0]
         else:
-            raise NotImplementedError(
-                "it is preferred to provide a warm start for this nonconvex problem"
-            )
+            # raise NotImplementedError(
+            #     "it is preferred to provide a warm start for this nonconvex problem"
+            # )
+            warnings.warn("using random initialization, but it is preferred to provide a warm start for this nonconvex problem")
+            dim = X.shape[1]
+            initial_w = rejection_uniform_sample(dim, self.seed)
         return initial_w
 
     def _is_feasible(self, w: np.ndarray) -> bool:
