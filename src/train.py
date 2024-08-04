@@ -35,6 +35,7 @@ parser.add_argument("--refine", default=False, action='store_true', help='turn o
 parser.add_argument("--refine-method", default="COBYLA", type=str, help='the method for local refinement')
 parser.add_argument('--verbose', default=False, action='store_true', help='print mosek logging')
 parser.add_argument("--multi-class", default='ovr', type=str, help='the multiclass training scheme', choices=['ovr', 'ovo'])
+parser.add_argument('--random-start', default=False, action="store_true", help='turn on for random init in gradient descent')
 parser.add_argument('--rho', default=0., type=float, help='the robust multiplier')
 
 # technical
@@ -68,7 +69,7 @@ def load_model():
     """get model"""
     if args.model.lower() == 'gd':
         from models import HyperbolicSVMSoft
-        model = HyperbolicSVMSoft(args.C, args.lr, multi_class=args.multi_class,seed=args.seed)
+        model = HyperbolicSVMSoft(args.C, args.lr, multi_class=args.multi_class,seed=args.seed,warm_start=not args.random_start)
     elif args.model.lower() == 'sdp':
         from models import HyperbolicSVMSoftSDP
         model = HyperbolicSVMSoftSDP(args.C, multi_class=args.multi_class, refine=args.refine, refine_method=args.refine_method)
